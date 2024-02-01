@@ -1,3 +1,5 @@
+# 现在BUG有点多，大概这几天会全部完善（年前）
+
 # android_virtualTouch
 
 #### 简介
