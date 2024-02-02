@@ -1,23 +1,36 @@
 #include <linux/uinput.h>
 #include <thread>
 
+struct screen
+{
+    int width{};
+    int height{};
+    int orientation{};
+    int fd{};
+};
+
 struct touchOBJ
 {
     int x{0};
     int y{0};
-    int slot{};
+    int id{0};
+    int TRACKING_ID{0};
     bool isDown{false};
     bool isUse{false};
-    bool isUp{false};
     bool isNeedMove{false};
+    bool isNeedDown{false};
+    bool isNeedUp{false};
+    bool IsFirstDown{false};
 };
 
 class Vector2
 {
 public:
     Vector2();
-    Vector2(float x,float y);
-    Vector2(Vector2& va);
+    Vector2(float x, float y);
+    Vector2(int x, int y);
+    Vector2(Vector2 &va);
+    Vector2& operator=(const Vector2& other);
     float x{};
     float y{};
 };
@@ -37,22 +50,29 @@ class touch
 public:
     touch();
     ~touch();
-    void touch_down(int id,int x,int y);//按下,这里的id记得从0开始，0-9
-    void touch_up(int id);//释放
-    void touch_move(int id,int x,int y);//x轴移动到x，y轴移动到y
+    void touch_down(const int& id,Vector2 pos);//按下,id可以是任何数
+    void touch_up(const int& id);//释放,id可以是任何数
+    void touch_move(const int& id,Vector2 pos);//x轴移动到x，y轴移动到y
 private:
-    input_event PTScreenEvent{};//物理触摸屏发出的事件
     uinput_user_dev usetup;//驱动信息
-    int PTScreenfd;//物理触摸屏的标识符
-    int fd{};//uinput的文件标识符
-    std::thread forwardTouchThread{};//转发触摸线程
-    Vector2 screenResolution{};//屏幕分辨率
-    Vector2 touchSize{};//触摸屏宽高
+    int uinputFd{};//uinput的文件标识符
+    std::thread PTScreenEventToFingerThread{};//将物理触摸屏的Event转化存到Finger数组的线程
+    std::thread GetScreenorientationThread{};//循环获取屏幕方向的线程
     float screenToTouchRatio{};//比例
-
-    void Touch();//遍历toucharr并处理
+    touchOBJ Fingers[10] = {};//手指
+    screen screenInfo = {};//屏幕信息
+    screen touchScreenInfo = {};//触摸屏信息
+private:
+    bool IsNoFirstDown();
+    int GetTRACKING_ID();
+    int GetNoUseIndex();
+    int GetindexById(const int& byId);
+    void GetScrorientation();//循环获取屏幕方向
+    std::string exec(std::string command);
+    Vector2 rotatePointx(Vector2 pos, const Vector2 wh, bool reverse = false);//根据方向来重构坐标,pos是坐标，wh是宽高 --reverse为真代表要反向计算 //举个例子：假如你要在横屏时触摸200，200，就让reverse == ture,假如你要让原始坐标转为实际触摸的就不用动
+    void upLoad();//遍历Finger数组并发送
+    void PTScreenEventToFinger();//将物理触摸屏的Event转化存到Finger数组
     void emit(int fd,input_event ie);//将ie写入fd
-    void InitPTScreenfd();//初始化物理触摸屏标识符
-    void InitTouchScreenSize();//初始化触摸屏宽高
-    void InitScreenResolution();//初始化屏幕分辨率
+    void InitTouchScreenInfo();//初始化物理触摸屏info
+    void InitScreenInfo();//初始化屏幕Info
 };
