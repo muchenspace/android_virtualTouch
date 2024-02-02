@@ -49,6 +49,7 @@ int main()
 
     touchTest->touch_up(114514);
 
+    sleep(999999999);
     delete touchTest;
     return 0;
 }

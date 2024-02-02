@@ -14,6 +14,7 @@ struct touchOBJ
     int x{0};
     int y{0};
     int id{0};
+    int PySlot{-1};//如果数据来自于物理触摸屏，这个成员会被赋值
     int TRACKING_ID{0};
     bool isDown{false};
     bool isUse{false};
@@ -63,9 +64,10 @@ private:
     screen screenInfo = {};//屏幕信息
     screen touchScreenInfo = {};//触摸屏信息
 private:
+    int GetPyFinger(int slot);
     bool IsNoFirstDown();
     int GetTRACKING_ID();
-    int GetNoUseIndex();
+    int GetNoUseIndex();//获取一个没有使用过的finger
     int GetindexById(const int& byId);
     void GetScrorientation();//循环获取屏幕方向
     std::string exec(std::string command);
