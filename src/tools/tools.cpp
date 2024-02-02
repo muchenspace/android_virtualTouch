@@ -168,20 +168,39 @@ void touch::PTScreenEventToFinger()
 {
     input_event touchEvent{};
     std::vector<input_event>touchEventS;//储存从两次syn事件中间的事件
+    input_absinfo absinfo{};
+    ioctl(touchScreenInfo.fd, EVIOCGABS(ABS_MT_SLOT), &absinfo);//获取slot信息
+    int Pyslot{};
     while(true)
     {
-        input_absinfo absinfo;
-        ioctl(touchScreenInfo.fd, EVIOCGABS(ABS_MT_SLOT), &absinfo);//获取slot信息
-        if(Fingers[absinfo.value].isUse)
-        {
-            absinfo.value++;
-        }
         read(touchScreenInfo.fd,&touchEvent,sizeof (touchEvent));
+        if(touchEvent.code == ABS_MT_SLOT)
+        {
+            absinfo.value = touchEvent.value;
+            continue;
+        }
+        Pyslot = absinfo.value;
+        if(Fingers[absinfo.value].isUse && Fingers[absinfo.value].PySlot == -1)//如果slot被占用且是被虚拟设备占用才会重新分配
+        {
+            Fingers[this->GetNoUseIndex()].PySlot = absinfo.value;
+            absinfo.value = this->GetNoUseIndex();
+        }
+        else
+        {
+            if(absinfo.value != 0)//是0就不需要了
+            {
+                int index = this->GetPyFinger(absinfo.value);
+                if(index != -1)
+                {
+                    absinfo.value = index;
+                }//判断一下这个slot是否已经分配了
+            }
+        }
+        Fingers[absinfo.value].PySlot = Pyslot;
         if (touchEvent.type == EV_SYN && touchEvent.code == SYN_REPORT)
         {
             for(auto& event:touchEventS)
             {
-
                 switch (event.type)
                 {
                     case EV_ABS:
@@ -196,6 +215,7 @@ void touch::PTScreenEventToFinger()
                                 Fingers[absinfo.value].isNeedUp = true;
                             }
                             Fingers[absinfo.value].TRACKING_ID = this->GetTRACKING_ID();
+                            continue;
                         }
                         else if(event.code == ABS_MT_POSITION_X)
                         {
@@ -204,6 +224,7 @@ void touch::PTScreenEventToFinger()
                                 Fingers[absinfo.value].isNeedMove = true;
                             }
                             Fingers[absinfo.value].x = event.value;
+                            continue;
                         }
                         else if(event.code == ABS_MT_POSITION_Y)
                         {
@@ -212,6 +233,7 @@ void touch::PTScreenEventToFinger()
                                 Fingers[absinfo.value].isNeedMove = true;
                             }
                             Fingers[absinfo.value].y = event.value;
+                            continue;
                         }
                         else
                         {
@@ -228,12 +250,12 @@ void touch::PTScreenEventToFinger()
                                     Fingers[absinfo.value].IsFirstDown = true;
                                 }
                             }//按下
+                            continue;
                         }
                         break;
                     default:
                         break;
                 }
-
             }
             touchEventS.clear();
             upLoad();
@@ -260,6 +282,18 @@ std::string touch::exec(std::string command)
     }
     pclose(pipe);
     return result;
+}
+
+int touch::GetPyFinger(int slot)
+{
+    for(int i{};i<10;i++)
+    {
+        if(Fingers[i].PySlot == slot)
+        {
+            return i;
+        }
+    }
+    return -1;
 }
 
 void touch::GetScrorientation()
