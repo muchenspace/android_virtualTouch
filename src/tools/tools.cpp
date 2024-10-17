@@ -90,7 +90,7 @@ void touch::InitTouchScreenInfo()
                     }
                 }
                 ioctl(fd, EVIOCGRAB, 0x1);//独占输入,只有此进程才能接收到事件 -_-
-                threads.emplace_back(&touch::PTScreenEventToFingerByFd,this,fd);
+                threads.emplace_back(&touch::PTScreenEventToFinger,this,fd);
             }
         }
     }//遍历/dev/input/下所有eventX，如果ABS_MT_SLOT为9(即最大支持10点触控)就视为物理触摸屏
@@ -108,7 +108,7 @@ touch::touch()
     InitTouchScreenInfo();
     GetScreenorientationThread = std::thread(&touch::GetScrorientation, this);
     sleep(2);
-    PTScreenEventToFingerThread = std::thread(&touch::PTScreenEventToFinger, this);
+    PTScreenEventToFingerThread = std::thread(&touch::PTScreenEventToFinger, this,0);
     this->uinputFd = open("/dev/uinput", O_RDWR);
     if (uinputFd < 0)
     {
@@ -192,61 +192,12 @@ touch::~touch()
 }
 
 
-void touch::PTScreenEventToFinger()
+void touch::PTScreenEventToFinger(int fd)
 {
-    input_event ie{};
-    int latestSlot{};
-    while (true)
+    if(!fd)
     {
-        read(touchScreenInfo.fd, &ie, sizeof(ie));
-        {
-            if (ie.type == EV_ABS)
-            {
-                if (ie.code == ABS_MT_SLOT)
-                {
-                    latestSlot = ie.value;
-                    Fingers[0][latestSlot].TRACKING_ID = 114514 + latestSlot;
-                    continue;
-                }
-                if (ie.code == ABS_MT_TRACKING_ID)
-                {
-                    if (ie.value == -1)
-                    {
-                        Fingers[0][latestSlot].isDown = false;
-                        Fingers[0][latestSlot].isUse = false;
-                    } else
-                    {
-                        Fingers[0][latestSlot].isUse = true;
-                        Fingers[0][latestSlot].isDown = true;
-                    }
-                    continue;
-                }
-                if (ie.code == ABS_MT_POSITION_X)
-                {
-                    Fingers[0][latestSlot].x = ie.value;
-                    continue;
-                }
-                if (ie.code == ABS_MT_POSITION_Y)
-                {
-                    Fingers[0][latestSlot].y = ie.value;
-                    continue;
-                }
-            }
-            if (ie.type == EV_SYN)
-            {
-                if (ie.code == SYN_REPORT)
-                {
-                    upLoad();
-                    continue;
-                }
-                continue;
-            }
-        }
+        fd = this->touchScreenInfo.fd;
     }
-}
-
-void touch::PTScreenEventToFingerByFd(int fd)
-{
     input_event ie{};
     int latestSlot{};
     while (true)
