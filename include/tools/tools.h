@@ -37,9 +37,9 @@ class touch
 public:
     touch();
     ~touch();
-    void touch_down(const int& id,const Vector2 &pos);//按下,id可以是任何数
-    void touch_up(const int& id);//释放
-    void touch_move(const int& id,const Vector2 &pos);//x轴移动到x，y轴移动到y
+    void touchDown(const int& id,const Vector2 &pos);//按下,id可以是任何数
+    void touchUp(const int& id);//释放
+    void touchMove(const int& id,const Vector2 &pos);//x轴移动到x，y轴移动到y
 private:
     std::vector<std::thread> threads;//储存PTScreenEventToFingerByFd
     uinput_user_dev usetup{};//驱动信息

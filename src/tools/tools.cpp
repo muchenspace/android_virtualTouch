@@ -362,7 +362,7 @@ int touch::GetNoUseIndex()
     return -1;
 }
 
-void touch::touch_down(const int &id, const Vector2 &pos)
+void touch::touchDown(const int &id, const Vector2 &pos)
 {
     int index = GetNoUseIndex();
     if (Fingers[1][index].isDown && Fingers[1][index].isUse)
@@ -381,7 +381,7 @@ void touch::touch_down(const int &id, const Vector2 &pos)
     this->upLoad();
 }
 
-void touch::touch_move(const int &id, const Vector2 &pos)
+void touch::touchMove(const int &id, const Vector2 &pos)
 {
     int index = GetindexById(id);
     if (index == -1)
@@ -400,7 +400,7 @@ void touch::touch_move(const int &id, const Vector2 &pos)
     this->upLoad();
 }
 
-void touch::touch_up(const int &id)
+void touch::touchUp(const int &id)
 {
     int index = GetindexById(id);
     if (!(Fingers[1][index].isDown && Fingers[1][index].isUse))

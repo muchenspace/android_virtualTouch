@@ -38,10 +38,10 @@
 int main()
 {
     touch touchTest;
-    touchTest.touch_down(110, {100, 200});
+    touchTest.touchDown(110, {100, 200});
     sleep(2);
-    touchTest.touch_move(110, {1300, 850});
+    touchTest.touchMove(110, {1300, 850});
     sleep(2);
-    touchTest.touch_up(110);
+    touchTest.touchUp(110);
     return 0;
 }
