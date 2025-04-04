@@ -40,7 +40,7 @@ int main()
     touch touchTest;
     touchTest.touchDown(110, {100, 200});
     sleep(2);
-    touchTest.touchMove(110, {1300, 850});
+    touchTest.touchMove(110, {400, 850});
     sleep(2);
     touchTest.touchUp(110);
     return 0;
