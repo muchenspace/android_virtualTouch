@@ -7,6 +7,7 @@
 #include <iostream>
 #include <thread>
 #include <filesystem>
+#include <sstream>
 #include <vector>
 
 Vector2::Vector2(int x, int y)
@@ -98,8 +99,19 @@ void touch::InitTouchScreenInfo()
 
 void touch::InitScreenInfo()
 {
-    std::string window_size = exec("wm size");
-    sscanf(window_size.c_str(), "Physical size: %dx%d", &this->screenInfo.width, &this->screenInfo.height);
+    std::string ScreenSize = exec("wm size");
+    std::istringstream ScreenSizeStream(ScreenSize);
+    std::string line{};
+
+    while (std::getline(ScreenSizeStream, line))
+    {
+        if (sscanf(line.c_str(), "Override size: %dx%d",&this->screenInfo.width, &this->screenInfo.height) == 2)
+        {
+            break; // 找到后立即退出循环
+        }
+        sscanf(line.c_str(), "Physical size: %dx%d",&this->screenInfo.width, &this->screenInfo.height);
+
+    }//有Override size则优先使用,找不到就使用Physical size
 }//初始化屏幕分辨率,方向单独放在一个线程了
 
 touch::touch()
@@ -290,16 +302,17 @@ void touch::upLoad()
 
 std::string touch::exec(const std::string &command)
 {
-    char buffer[128];
+    char buf[1024];
     std::string result{};
+    FILE* pipe = popen(command.c_str(), "r");
 
-    FILE *pipe = popen(command.c_str(), "r");
-    while (!feof(pipe))
+    if (!pipe)
     {
-        if (fgets(buffer, 128, pipe) != nullptr)
-        {
-            result += buffer;
-        }
+        throw std::runtime_error("命令执行失败: " + command);
+    }
+    while (fgets(buf, sizeof(buf), pipe))
+    {
+        result += buf;
     }
     pclose(pipe);
     return result;
@@ -309,35 +322,35 @@ void touch::GetScrorientation()
 {
     while (true)
     {
-        this->screenInfo.orientation = atoi(
-                exec("dumpsys display | grep 'mCurrentOrientation' | cut -d'=' -f2").c_str());
+        this->screenInfo.orientation = atoi(exec("dumpsys display | grep 'mCurrentOrientation' | cut -d'=' -f2").c_str());
         std::this_thread::sleep_for(std::chrono::seconds(5));
     }
 }
 
+
 Vector2 touch::rotatePointx(const Vector2 &pos, const Vector2 &wh, bool reverse) const
 {
-    Vector2 xy{pos.x, pos.y};
-    if (this->screenInfo.orientation == 0)//竖
+    Vector2 rotated{pos.x,pos.y};
+    switch (screenInfo.orientation)
     {
-        return xy;
+        case 0: // 竖屏
+            return rotated;
+        break;
+        case 1: // 横屏
+            rotated.y = reverse ? pos.x : wh.y - pos.x;
+            rotated.x = reverse ? wh.x - pos.y : pos.y;
+        break;
+        case 2: // 反向竖屏
+            rotated.x = wh.x - pos.x;
+            rotated.y = wh.y - pos.y;
+        break;
+        case 3: // 反向横屏
+            rotated.y = reverse ? wh.y - pos.x : pos.x;
+            rotated.x = reverse ? pos.y : wh.x - pos.y;
+        break;
     }
-    if (this->screenInfo.orientation == 3)//横
-    {
-        xy.x = reverse ? pos.y : (float) wh.y - pos.y;
-        xy.y = reverse ? (float) wh.y - pos.x : pos.x;
-    } else if (this->screenInfo.orientation == 2)//竖
-    {
-        xy.x = (float) wh.x - pos.x;
-        xy.y = (float) wh.y - pos.y;
-    } else if (this->screenInfo.orientation == 1)//横
-    {
-        xy.x = reverse ? (float) wh.x - pos.y : pos.y;
-        xy.y = reverse ? pos.x : (float) wh.x - pos.x;
-    }
-    return xy;
+    return rotated;
 }
-
 int touch::GetindexById(const int &byId)
 {
     for (int i{0}; i < 10; i++)
