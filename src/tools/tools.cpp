@@ -45,56 +45,35 @@ Vector2 &Vector2::operator=(const Vector2 &other)
     return *this;
 }
 
-
 void touch::InitTouchScreenInfo()
 {
-    bool isFound{false};
-    for (const auto &entry: std::filesystem::directory_iterator("/dev/input/"))
+    for (const auto &entry : std::filesystem::directory_iterator("/dev/input/"))
     {
         int fd = open(entry.path().c_str(), O_RDWR);
-        if(fd < 0)
+        if (fd < 0)
         {
-            std::cout<<"打开"<<entry.path()<<"失败"<<std::endl;
+            std::cout << "打开" << entry.path() << "失败" << std::endl;
         }
         input_absinfo absinfo{};
         ioctl(fd, EVIOCGABS(ABS_MT_SLOT), &absinfo);
         if (absinfo.maximum == 9)
         {
-            if(!isFound)
+            this->touchScreenInfo.fd.emplace_back(open(entry.path().c_str(), O_RDWR));
+
+            if (touchScreenInfo.width == 0 || touchScreenInfo.height == 0)
             {
-                isFound = true;
-                this->touchScreenInfo.fd = open(entry.path().c_str(), O_RDWR);
-                close(fd);
-                if(touchScreenInfo.width == 0||touchScreenInfo.height == 0)
+                input_absinfo absX{}, absY{};
+                ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &absX);
+                ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &absY);
+                if (absX.maximum != 0 && absY.maximum != 0)
                 {
-                    input_absinfo absX{}, absY{};
-                    ioctl(touchScreenInfo.fd, EVIOCGABS(ABS_MT_POSITION_X), &absX);
-                    ioctl(touchScreenInfo.fd, EVIOCGABS(ABS_MT_POSITION_Y), &absY);
-                    if(absX.maximum!=0&&absY.maximum!=0)
-                    {
-                        this->touchScreenInfo.width = absX.maximum;
-                        this->touchScreenInfo.height = absY.maximum;
-                    }
+                    this->touchScreenInfo.width = absX.maximum;
+                    this->touchScreenInfo.height = absY.maximum;
                 }
-            }
-            else
-            {
-                if(touchScreenInfo.width == 0||touchScreenInfo.height == 0)
-                {
-                    input_absinfo absX{}, absY{};
-                    ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &absX);
-                    ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &absY);
-                    if(absX.maximum!=0 && absY.maximum!=0)
-                    {
-                        this->touchScreenInfo.width = absX.maximum;
-                        this->touchScreenInfo.height = absY.maximum;
-                    }
-                }
-                ioctl(fd, EVIOCGRAB, 0x1);//独占输入,只有此进程才能接收到事件 -_-
-                threads.emplace_back(&touch::PTScreenEventToFinger,this,fd);
             }
         }
-    }//遍历/dev/input/下所有eventX，如果ABS_MT_SLOT为9(即最大支持10点触控)就视为物理触摸屏
+        close(fd);
+    } // 遍历/dev/input/下所有eventX，如果ABS_MT_SLOT为9(即最大支持10点触控)就视为物理触摸屏
 }
 
 void touch::InitScreenInfo()
@@ -118,9 +97,13 @@ touch::touch()
 {
     InitScreenInfo();
     InitTouchScreenInfo();
+    for (const auto &entry : touchScreenInfo.fd)
+    {
+        threads.emplace_back(&touch::PTScreenEventToFinger, this, entry);
+    }
     GetScreenorientationThread = std::thread(&touch::GetScrorientation, this);
     sleep(2);
-    PTScreenEventToFingerThread = std::thread(&touch::PTScreenEventToFinger, this,0);
+
     this->uinputFd = open("/dev/uinput", O_RDWR);
     if (uinputFd < 0)
     {
@@ -174,7 +157,10 @@ touch::touch()
 
     ioctl(uinputFd, UI_DEV_CREATE);//创建驱动
 
-    ioctl(this->touchScreenInfo.fd, EVIOCGRAB, 0x1);//独占输入,只有此进程才能接收到事件 -_-
+    for (const auto &entry : touchScreenInfo.fd)
+    {
+        ioctl(entry, EVIOCGRAB, 0x1); // 独占输入,只有此进程才能接收到事件 -_-
+    }
 
     std::cout << "触摸屏宽高  " << touchScreenInfo.width << "   " << touchScreenInfo.height << std::endl;
     std::cout << "屏幕分辨率  " << screenInfo.width << "   " << screenInfo.height << std::endl;
@@ -195,7 +181,6 @@ touch::~touch()
 {
     ioctl(uinputFd, UI_DEV_DESTROY);
     close(uinputFd);
-    PTScreenEventToFingerThread.detach();
     GetScreenorientationThread.detach();
     for (std::thread &item: threads)
     {
@@ -206,10 +191,6 @@ touch::~touch()
 
 void touch::PTScreenEventToFinger(int fd)
 {
-    if(!fd)
-    {
-        fd = this->touchScreenInfo.fd;
-    }
     input_event ie{};
     int latestSlot{};
     while (true)

@@ -8,7 +8,7 @@ struct screen
     int width{};
     int height{};
     int orientation{};
-    int fd{};
+    std::vector<int> fd{};
 };
 
 struct touchOBJ
@@ -46,7 +46,6 @@ private:
     std::vector<std::thread> threads;//储存PTScreenEventToFingerByFd
     uinput_user_dev usetup{};//驱动信息
     int uinputFd{};//uinput的文件标识符
-    std::thread PTScreenEventToFingerThread{};//将物理触摸屏的Event转化存到Finger数组的线程
     std::thread GetScreenorientationThread{};//循环获取屏幕方向的线程
     float screenToTouchRatio{};//比例
     touchOBJ Fingers[2][10]{};//手指，物理触摸屏和模拟触摸
