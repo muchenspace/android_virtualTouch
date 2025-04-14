@@ -9,6 +9,10 @@
 #include <filesystem>
 #include <sstream>
 #include <vector>
+#include <android/log.h>
+
+#define TAG "muchen"
+#define Log __android_log_print
 
 Vector2::Vector2(int x, int y)
 {
@@ -52,12 +56,13 @@ void touch::InitTouchScreenInfo()
         int fd = open(entry.path().c_str(), O_RDWR);
         if (fd < 0)
         {
-            std::cout << "打开" << entry.path() << "失败" << std::endl;
+            Log(ANDROID_LOG_WARN,TAG, "%s", std::string ("打开 "+entry.path().string()+"失败").c_str());
         }
         input_absinfo absinfo{};
         ioctl(fd, EVIOCGABS(ABS_MT_SLOT), &absinfo);
         if (absinfo.maximum == 9)
         {
+            Log(ANDROID_LOG_INFO,TAG, "%s", std::string ("找到疑似触摸节点: "+entry.path().string()).c_str());
             this->touchScreenInfo.fd.emplace_back(open(entry.path().c_str(), O_RDWR));
 
             if (touchScreenInfo.width == 0 || touchScreenInfo.height == 0)
@@ -107,7 +112,8 @@ touch::touch()
     this->uinputFd = open("/dev/uinput", O_RDWR);
     if (uinputFd < 0)
     {
-        perror("打开uinput失败！！");
+        Log(ANDROID_LOG_ERROR,TAG, "uinput打开失败");
+        throw std::runtime_error("uinput打开失败");
     }
 
     ioctl(uinputFd, UI_SET_PROPBIT, INPUT_PROP_DIRECT);//设置为直接输入设备
@@ -164,6 +170,8 @@ touch::touch()
 
     std::cout << "触摸屏宽高  " << touchScreenInfo.width << "   " << touchScreenInfo.height << std::endl;
     std::cout << "屏幕分辨率  " << screenInfo.width << "   " << screenInfo.height << std::endl;
+    Log(ANDROID_LOG_INFO,TAG,"%s",std::string("触摸屏宽高: " + std::to_string(touchScreenInfo.width)  + "*" + std::to_string(touchScreenInfo.height)).c_str());
+    Log(ANDROID_LOG_INFO,TAG,"%s",std::string("屏幕分辨率: " + std::to_string(screenInfo.width)  + "*" + std::to_string(screenInfo.height)).c_str());
     screenToTouchRatio =(float) (screenInfo.width + screenInfo.height) / (float) (touchScreenInfo.width + touchScreenInfo.height);
     if (screenToTouchRatio < 1 && screenToTouchRatio > 0.9)
     {
@@ -289,7 +297,8 @@ std::string touch::exec(const std::string &command)
 
     if (!pipe)
     {
-        throw std::runtime_error("命令执行失败: " + command);
+        Log(ANDROID_LOG_WARN,TAG,"%s",std::string ("命令 "+ command+ "执行失败").c_str());
+        return "";
     }
     while (fgets(buf, sizeof(buf), pipe))
     {
