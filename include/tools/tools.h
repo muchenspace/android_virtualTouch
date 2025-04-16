@@ -40,7 +40,7 @@ public:
     void touchDown(const int& id,const Vector2 &pos);//按下,id可以是任何数
     void touchUp(const int& id);//释放
     void touchMove(const int& id,const Vector2 &pos);//x轴移动到x，y轴移动到y
-    void monitorEvent(void (*callBack)(int slot,Vector2 data,int type));
+    void monitorEvent(void (*callBack)(int slot,Vector2 data,int type));//监听触摸并调用回调函数 slot:可以理解为第几根手指 data:坐标 type: 0:touchDown,1:touchUp
 private:
     std::vector<std::thread> threads;//储存PTScreenEventToFingerByFd
     uinput_user_dev usetup{};//驱动信息
