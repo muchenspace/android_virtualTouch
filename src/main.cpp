@@ -35,6 +35,11 @@
 #include <unistd.h>
 #include "tools.h"
 
+void monitorTest(int slot,Vector2 data,int type)
+{
+    std::cout<<"slot: "<<slot<<"  "<<"xy: "<<data.x<<"  "<<data.y<<"  "<<"type: "<<type<<std::endl;
+}
+
 int main()
 {
     touch touchTest;
@@ -43,5 +48,7 @@ int main()
     touchTest.touchMove(110, {200, 300});
     sleep(2);
     touchTest.touchUp(110);
+    touchTest.monitorEvent(monitorTest);
+    sleep(15);
     return 0;
 }

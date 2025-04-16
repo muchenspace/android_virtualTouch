@@ -8,6 +8,7 @@
 #include <thread>
 #include <filesystem>
 #include <sstream>
+#include <utility>
 #include <vector>
 #include <android/log.h>
 
@@ -219,6 +220,8 @@ void touch::PTScreenEventToFinger(int fd)
                     {
                         Fingers[0][latestSlot].isDown = false;
                         Fingers[0][latestSlot].isUse = false;
+                        Fingers[0][latestSlot].x = 0;
+                        Fingers[0][latestSlot].y = 0;
                     } else
                     {
                         Fingers[0][latestSlot].isUse = true;
@@ -241,6 +244,20 @@ void touch::PTScreenEventToFinger(int fd)
             {
                 if (ie.code == SYN_REPORT)
                 {
+                    if(monitorCallBack!= nullptr)
+                    {
+                        if(Fingers[0][latestSlot].isDown)
+                        {
+                            Vector2 newPos = rotatePointx({Fingers[0][latestSlot].x,Fingers[0][latestSlot].y},{screenInfo.width, screenInfo.height},false);
+                            newPos.x *= this->screenToTouchRatio;
+                            newPos.y *= this->screenToTouchRatio;
+                            monitorCallBack(latestSlot,newPos,0);
+                        }
+                        if(!Fingers[0][latestSlot].isDown)
+                        {
+                            monitorCallBack(latestSlot, {0,0},1);
+                        }
+                    }
                     upLoad();
                     continue;
                 }
@@ -415,4 +432,10 @@ void touch::touchUp(const int &id)
     Fingers[1][index].id = 0;
     this->upLoad();
 }
+
+void touch::monitorEvent(void (*callBack)(int, Vector2, int))
+{
+    monitorCallBack = callBack;
+}
+
 
