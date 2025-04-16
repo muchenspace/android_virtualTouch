@@ -7,6 +7,7 @@
     void touchDown(const int& id,Vector2 pos);//按下,id可以是任何数
     void touchUp(const int& id);//释放
     void touchMove(const int& id,Vector2 pos);//x轴移动到x，y轴移动到y
+    void monitorEvent(void (*callBack)(int slot,Vector2 data,int type));//监听触摸并调用回调函数 slot:可以理解为第几根手指 data:坐标 type: 0:touchDown,1:touchUp
 ## 关于
 使用多点触控协议A类型  
 之前使用b协议的版本放到了另一个分支，有需要可以去下载
