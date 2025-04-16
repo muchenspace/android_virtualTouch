@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD 20)
 set(NDK_PATH D:/android-ndk-r26b) # 记得修改一下ndk路径
 
 set(ANDROID_ABI arm64-v8a)
