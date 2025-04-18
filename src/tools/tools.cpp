@@ -54,7 +54,7 @@ void touch::InitTouchScreenInfo()
 {
     for (const auto &entry : std::filesystem::directory_iterator("/dev/input/"))
     {
-        int fd = open(entry.path().c_str(), O_RDWR);
+        int fd = open(entry.path().c_str(), O_RDONLY);
         if (fd < 0)
         {
             Log(ANDROID_LOG_WARN,TAG, "%s", std::string ("打开 "+entry.path().string()+"失败").c_str());
@@ -64,7 +64,7 @@ void touch::InitTouchScreenInfo()
         if (absinfo.maximum == 9)
         {
             Log(ANDROID_LOG_INFO,TAG, "%s", std::string ("找到疑似触摸节点: "+entry.path().string()).c_str());
-            this->touchScreenInfo.fd.emplace_back(open(entry.path().c_str(), O_RDWR));
+            this->touchScreenInfo.fd.emplace_back(open(entry.path().c_str(), O_RDONLY));
 
             if (touchScreenInfo.width == 0 || touchScreenInfo.height == 0)
             {
