@@ -1,5 +1,7 @@
 #include <linux/uinput.h>
 #include <thread>
+#include <atomic>
+#include <mutex>
 
 struct screen
 {
@@ -50,7 +52,9 @@ private:
     touchOBJ Fingers[2][10]{};//手指，物理触摸屏和模拟触摸
     screen screenInfo{};//屏幕信息
     screen touchScreenInfo{};//触摸屏信息
-    void (*monitorCallBack)(int slot,Vector2 data,int type){nullptr};//0:touchDown,1:touchUp
+    std::mutex fingersMutex{};
+    std::atomic<int> screenOrientation{0};
+    std::atomic<void (*)(int slot,Vector2 data,int type)> monitorCallBack{nullptr};//0:touchDown,1:touchUp
 private:
     int GetNoUseIndex();//获取一个没有使用过的finger,仅限模拟触摸
     int GetindexById(const int& byId);
