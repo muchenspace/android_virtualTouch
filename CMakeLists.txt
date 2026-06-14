@@ -1,7 +1,14 @@
 cmake_minimum_required(VERSION 3.21)
 
 set(CMAKE_CXX_STANDARD 20)
-set(NDK_PATH D:/android-ndk-r27c) # 记得修改一下ndk路径
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
+# NDK 路径：优先使用环境变量 ANDROID_NDK_HOME，否则使用默认路径
+if(NOT DEFINED ENV{ANDROID_NDK_HOME})
+    set(NDK_PATH D:/android-ndk-r27c) # 记得修改一下ndk路径
+else()
+    set(NDK_PATH $ENV{ANDROID_NDK_HOME})
+endif()
 
 set(ANDROID_ABI arm64-v8a)
 set(ANDROID_NDK ${NDK_PATH})

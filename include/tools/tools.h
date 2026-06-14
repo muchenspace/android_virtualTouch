@@ -53,6 +53,8 @@ private:
     screen screenInfo{};//屏幕信息
     screen touchScreenInfo{};//触摸屏信息
     std::mutex fingersMutex{};
+    std::mutex uploadMutex{};
+    std::atomic<bool> quitFlag{false};
     std::atomic<int> screenOrientation{0};
     std::atomic<void (*)(int slot,Vector2 data,int type)> monitorCallBack{nullptr};//0:touchDown,1:touchUp
 private:

@@ -2,6 +2,7 @@
 #include <linux/input.h>
 #include <fcntl.h>
 #include <cstdio>
+#include <cstring>
 #include <linux/uinput.h>
 #include <unistd.h>
 #include <iostream>
@@ -70,7 +71,7 @@ void touch::InitTouchScreenInfo()
         {
             Log(ANDROID_LOG_INFO,TAG, "%s", std::string("找到疑似触摸节点: " + entry.path().string()).c_str());
             std::cout << std::string("找到疑似触摸节点: " + entry.path().string()).c_str() << std::endl;
-            this->touchScreenInfo.fd.emplace_back(open(entry.path().c_str(), O_RDWR)); //加入到节点组中
+            this->touchScreenInfo.fd.emplace_back(fd); //直接使用已打开的fd，避免重复open
 
             if (touchScreenInfo.width == 0 || touchScreenInfo.height == 0) //有多个节点的情况下，只使用第一个节点的信息
             {
@@ -83,8 +84,10 @@ void touch::InitTouchScreenInfo()
                     this->touchScreenInfo.height = absY.maximum;
                 }
             }
+        } else
+        {
+            close(fd); // 非触摸屏节点，关闭
         }
-        close(fd);
     } // 遍历/dev/input/下所有eventX，如果ABS_MT_SLOT数量合理就视为触摸屏
 }
 
@@ -102,6 +105,14 @@ void touch::InitScreenInfo()
         }
         sscanf(line.c_str(), "Physical size: %dx%d", &this->screenInfo.width, &this->screenInfo.height);
     } //有Override size则优先使用,找不到就使用Physical size
+
+    // 防止某些ROM下wm size解析失败导致除零，使用安全回退值
+    if (screenInfo.width == 0 || screenInfo.height == 0)
+    {
+        screenInfo.width = 1080;
+        screenInfo.height = 1920;
+        Log(ANDROID_LOG_WARN, TAG, "%s", "wm size解析失败，使用回退分辨率1080x1920");
+    }
 } //初始化屏幕分辨率,方向单独放在一个线程了
 
 touch::touch()
@@ -113,7 +124,7 @@ touch::touch()
         threads.emplace_back(&touch::PTScreenEventToFinger, this, entry);
     } //每个疑似触摸屏的节点都调用PTScreenEventToFinger，建立在只有一个触摸屏的前提下
     GetScreenorientationThread = std::thread(&touch::GetScrorientation, this);
-    sleep(2);
+    usleep(100000);
 
     this->uinputFd = open("/dev/uinput", O_RDWR);
     if (uinputFd < 0)
@@ -193,18 +204,26 @@ touch::touch()
     down.code = BTN_TOUCH;
     down.value = 1;
     write(uinputFd, &down, sizeof(down));
-    sleep(2);
+    usleep(100000);
 }
 
 touch::~touch()
 {
+    quitFlag.store(true);
+    // 关闭触摸屏 fd 使阻塞在 read() 的线程退出
+    for (const auto &fd: touchScreenInfo.fd)
+    {
+        close(fd);
+    }
     ioctl(uinputFd, UI_DEV_DESTROY);
     close(uinputFd);
-    GetScreenorientationThread.detach();
+    if (GetScreenorientationThread.joinable())
+        GetScreenorientationThread.join();
     for (std::thread &item: threads)
     {
-        item.detach();
-    } //直接detach线程即可，touch析构程序也退出
+        if (item.joinable())
+            item.join();
+    }
 }
 
 
@@ -212,11 +231,11 @@ void touch::PTScreenEventToFinger(int fd)
 {
     input_event ie{};
     int latestSlot{};
-    while (true)
+    bool frameChanged{false};
+    while (!quitFlag.load(std::memory_order_relaxed))
     {
         if (read(fd, &ie, sizeof(ie)) <= 0)
         {
-            // 处理 read 错误或 EOF
             break;
         }
         {
@@ -231,7 +250,6 @@ void touch::PTScreenEventToFinger(int fd)
                         latestSlot = 0; // Fallback or handle error
                         continue;
                     }
-
                     {
                         std::lock_guard<std::mutex> lock(fingersMutex);
                         Fingers[0][latestSlot].TRACKING_ID = 114514 + latestSlot;
@@ -253,18 +271,21 @@ void touch::PTScreenEventToFinger(int fd)
                         Fingers[0][latestSlot].isUse = true;
                         Fingers[0][latestSlot].isDown = true;
                     }
+                    frameChanged = true;
                     continue;
                 }
                 if (ie.code == ABS_MT_POSITION_X)
                 {
                     std::lock_guard<std::mutex> lock(fingersMutex);
                     Fingers[0][latestSlot].x = ie.value;
+                    frameChanged = true;
                     continue;
                 }
                 if (ie.code == ABS_MT_POSITION_Y)
                 {
                     std::lock_guard<std::mutex> lock(fingersMutex);
                     Fingers[0][latestSlot].y = ie.value;
+                    frameChanged = true;
                     continue;
                 }
             }
@@ -297,7 +318,11 @@ void touch::PTScreenEventToFinger(int fd)
                             callBack(latestSlot, {0, 0}, 1);
                         }
                     }
-                    upLoad();
+                    if (frameChanged)
+                    {
+                        upLoad();
+                        frameChanged = false;
+                    }
                     continue;
                 }
                 continue;
@@ -312,48 +337,36 @@ void touch::upLoad()
     touchOBJ snapshot[2][10]{};
     {
         std::lock_guard<std::mutex> lock(fingersMutex);
-        for (int i = 0; i < 2; i++)
+        memcpy(snapshot, Fingers, sizeof(Fingers));
+    }
+
+    // 栈分配，避免每次堆分配；2类型 x 10手指 x 4事件 + SYN_REPORT
+    input_event events[82]{};
+    int count = 0;
+
+    for (int i = 0; i < 2; i++)
+    {
+        for (int j = 0; j < 10; j++)
         {
-            for (int j = 0; j < 10; j++)
+            if (snapshot[i][j].isDown)
             {
-                snapshot[i][j] = Fingers[i][j];
+                events[count++] = {.type = EV_ABS, .code = ABS_MT_TRACKING_ID, .value = snapshot[i][j].TRACKING_ID};
+                events[count++] = {.type = EV_ABS, .code = ABS_MT_POSITION_X, .value = snapshot[i][j].x};
+                events[count++] = {.type = EV_ABS, .code = ABS_MT_POSITION_Y, .value = snapshot[i][j].y};
+                events[count++] = {.type = EV_SYN, .code = SYN_MT_REPORT, .value = 0};
             }
         }
     }
-    std::vector<input_event> events{};
-    for (auto &fingers: snapshot)
+    // 协议要求每帧至少一个 SYN_MT_REPORT，否则内核复用上一帧触点导致无法抬起
+    if (count == 0)
     {
-        for (auto &finger: fingers)
-        {
-            if (finger.isDown)
-            {
-                input_event down_events[]
-                {
-                    {.type = EV_ABS, .code = ABS_MT_TRACKING_ID, .value = finger.TRACKING_ID},
-                    {.type = EV_ABS, .code = ABS_MT_POSITION_X, .value = finger.x},
-                    {.type = EV_ABS, .code = ABS_MT_POSITION_Y, .value = finger.y},
-                    {.type = EV_SYN, .code = SYN_MT_REPORT, .value = 0},
-                };
-                int arrCount = sizeof(down_events) / sizeof(down_events[0]);
-                events.insert(events.end(), down_events, down_events + arrCount);
-            }
-        }
+        events[count++] = {.type = EV_SYN, .code = SYN_MT_REPORT, .value = 0};
     }
-    input_event touchEnd{};
-    touchEnd.type = EV_SYN;
-    touchEnd.code = SYN_MT_REPORT;
-    touchEnd.value = 0;
-    events.push_back(touchEnd);
-    input_event end{};
-    end.type = EV_SYN;
-    end.code = SYN_REPORT;
-    end.value = 0;
-    events.push_back(end);
-    for (const auto &event: events)
-    {
-        write(uinputFd, &event, sizeof(event));
-    }
-    events.clear();
+    events[count++] = {.type = EV_SYN, .code = SYN_REPORT, .value = 0};
+
+    // 锁住整个写入阶段，防止多线程并发写 uinputFd 导致事件帧交叠
+    std::lock_guard<std::mutex> lock(uploadMutex);
+    write(uinputFd, events, count * sizeof(input_event));
 }
 
 std::string touch::exec(const std::string &command)
@@ -377,7 +390,7 @@ std::string touch::exec(const std::string &command)
 
 void touch::GetScrorientation()
 {
-    while (true)
+    while (!quitFlag.load(std::memory_order_relaxed))
     {
         this->screenOrientation.store(
             atoi(exec("dumpsys display | grep 'mCurrentOrientation' | cut -d'=' -f2").c_str()),
@@ -386,6 +399,7 @@ void touch::GetScrorientation()
         // 使用更精细的 sleep 循环以响应退出请求
         for (int i = 0; i < 50; ++i)
         {
+            if (quitFlag.load(std::memory_order_relaxed)) return;
             std::this_thread::sleep_for(std::chrono::milliseconds(100));
         }
     }
@@ -447,21 +461,27 @@ void touch::touchDown(const int &id, const Vector2 &pos)
     newPos.y /= this->screenToTouchRatio;
     {
         std::lock_guard<std::mutex> lock(fingersMutex);
-        int index = GetNoUseIndex();
-        if (index == -1)
+        // 检查 id 是否已存在，避免同一 id 占多个槽导致手指泄漏
+        int existIndex = GetindexById(id);
+        if (existIndex != -1)
         {
-            return;
-        }
-        if (Fingers[1][index].isDown && Fingers[1][index].isUse)
+            Fingers[1][existIndex].x = (int) newPos.x;
+            Fingers[1][existIndex].y = (int) newPos.y;
+            Fingers[1][existIndex].isDown = true;
+        } else
         {
-            return;
+            int index = GetNoUseIndex();
+            if (index == -1)
+            {
+                return;
+            }
+            Fingers[1][index].isDown = true;
+            Fingers[1][index].id = id;
+            Fingers[1][index].TRACKING_ID = 415411 + id;
+            Fingers[1][index].x = (int) newPos.x;
+            Fingers[1][index].y = (int) newPos.y;
+            Fingers[1][index].isUse = true;
         }
-        Fingers[1][index].isDown = true;
-        Fingers[1][index].id = id;
-        Fingers[1][index].TRACKING_ID = 415411 + id;
-        Fingers[1][index].x = (int) newPos.x;
-        Fingers[1][index].y = (int) newPos.y;
-        Fingers[1][index].isUse = true;
     }
     this->upLoad();
 }
@@ -479,6 +499,11 @@ void touch::touchMove(const int &id, const Vector2 &pos)
             return;
         }
         if (!(Fingers[1][index].isUse && Fingers[1][index].isDown))
+        {
+            return;
+        }
+        // 坐标未变化则跳过，避免高频次重复触摸时的冗余上报
+        if (Fingers[1][index].x == (int) newPos.x && Fingers[1][index].y == (int) newPos.y)
         {
             return;
         }
