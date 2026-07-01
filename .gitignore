@@ -1,5 +1,16 @@
+# IDE
 .idea/
-cmake-build-debug/
 .vscode/
-build/
 .claude/
+
+# Build
+build/
+cmake-build-debug/
+
+# Compiled objects
+*.o
+*.obj
+
+# OS
+.DS_Store
+Thumbs.db

@@ -33,7 +33,7 @@
  */
 #include <iostream>
 #include <unistd.h>
-#include "tools.h"
+#include "touch/touch.h"
 
 void monitorTest(int slot,Vector2 data,int type)
 {
@@ -43,12 +43,15 @@ void monitorTest(int slot,Vector2 data,int type)
 int main()
 {
     touch touchTest;
-    touchTest.touchDown(110, {100, 200});
-    sleep(2);
-    touchTest.touchMove(110, {200, 300});
-    sleep(2);
-    touchTest.touchUp(110);
     touchTest.monitorEvent(monitorTest);
-    sleep(15);
+    while (true)
+    {
+        touchTest.touchDown(110, {100, 200});
+        sleep(1);
+        touchTest.touchMove(110, {200, 300});
+        sleep(1);
+        touchTest.touchUp(110);
+        sleep(3);
+    }
     return 0;
 }
