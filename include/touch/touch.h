@@ -35,7 +35,6 @@ public:
     void touchDown(const int& id,const Vector2 &pos);//按下,id可以是任何数
     void touchUp(const int& id);//释放
     void touchMove(const int& id,const Vector2 &pos);//x轴移动到x，y轴移动到y
-    void monitorEvent(void (*callBack)(int slot,Vector2 data,int type));//监听触摸并调用回调函数 slot:可以理解为第几根手指 data:坐标 type: 0:touchDown,1:touchUp
 private:
     std::vector<std::thread> threads;//储存PTScreenEventToFingerByFd
     uinput_user_dev usetup{};//驱动信息
@@ -49,7 +48,6 @@ private:
     std::mutex uploadMutex{};
     std::atomic<bool> quitFlag{false};
     std::atomic<int> screenOrientation{0};
-    std::atomic<void (*)(int slot,Vector2 data,int type)> monitorCallBack{nullptr};//0:touchDown,1:touchUp
 private:
     int GetNoUseIndex();//获取一个没有使用过的finger,仅限模拟触摸
     int GetIndexById(const int& byId);
@@ -70,5 +68,4 @@ private:
     Vector2 screenToTouchCoords(const Vector2& pos) const;//屏幕坐标→触摸坐标（用于 touchDown/touchMove）
     Vector2 touchToScreenCoords(const Vector2& pos) const;//触摸坐标→屏幕坐标（用于监听回调）
     static void appendFingerEvents(input_event* events, int& count, const touchOBJ& finger);
-    void notifyMonitor(int slot);//处理 SYN_REPORT 时的监听回调通知
 };

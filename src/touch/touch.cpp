@@ -118,7 +118,7 @@ touch::touch()
     for (const auto &entry: touchScreenInfo.fd)
     {
         threads.emplace_back(&touch::PTScreenEventToFinger, this, entry);
-    } //每个疑似触摸屏的节点都调用PTScreenEventToFinger，建立在只有一个触摸屏的前提下
+    } //每个疑似触摸屏的节点都调用PTScreenEventToFinger，实际代码无法支持多触摸屏，建立在只有一个触摸屏的前提下
     getScreenOrientationThread = std::thread(&touch::GetScreenOrientation, this);
     usleep(kUinputInitDelayUs);
 
@@ -326,7 +326,6 @@ void touch::PTScreenEventToFinger(int fd)
             {
                 if (ie.code == SYN_REPORT)
                 {
-                    notifyMonitor(latestSlot);
                     if (frameChanged)
                     {
                         upLoad();
@@ -337,32 +336,6 @@ void touch::PTScreenEventToFinger(int fd)
                 continue;
             }
         }
-    }
-}
-
-void touch::notifyMonitor(int slot)
-{
-    auto callBack = monitorCallBack.load(std::memory_order_relaxed);
-    if (callBack == nullptr) return;
-
-    bool isDown{};
-    Vector2 pos{};
-    {
-        std::lock_guard<std::mutex> lock(fingersMutex);
-        isDown = fingers[0][slot].isDown;
-        if (isDown)
-        {
-            pos = {fingers[0][slot].x, fingers[0][slot].y};
-        }
-    }
-    if (isDown)
-    {
-        Vector2 newPos = touchToScreenCoords(pos);
-        callBack(slot, newPos, 0);
-    }
-    else
-    {
-        callBack(slot, {0, 0}, 1);
     }
 }
 
@@ -477,12 +450,7 @@ Vector2 touch::screenToTouchCoords(const Vector2 &pos) const
     return result;
 }
 
-Vector2 touch::touchToScreenCoords(const Vector2 &pos) const
-{
-    Vector2 result = rotatePointx(pos, {screenInfo.width, screenInfo.height}, false);
-    result *= screenToTouchRatio;
-    return result;
-}
+
 
 int touch::GetIndexById(const int &byId)
 {
@@ -582,9 +550,4 @@ void touch::touchUp(const int &id)
         fingers[1][index].id = 0;
     }
     this->upLoad();
-}
-
-void touch::monitorEvent(void (*callBack)(int, Vector2, int))
-{
-    monitorCallBack.store(callBack, std::memory_order_relaxed);
 }

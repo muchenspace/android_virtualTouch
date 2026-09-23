@@ -1,16 +1,38 @@
-# IDE
+# IDE & Tools
 .idea/
 .vscode/
 .claude/
+.gemini/
+*.swp
+*.swo
+*~
 
-# Build
+# AI & Local Rules
+AGENTS.md
+
+# Build & CMake
 build/
-cmake-build-debug/
+cmake-build-*/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+*.ninja
+.ninja_*
+compile_commands.json
 
-# Compiled objects
+# Compiled objects & Binaries
 *.o
 *.obj
+*.a
+*.so
+*.dll
+*.dylib
+*.exe
+*.out
 
 # OS
 .DS_Store
 Thumbs.db
+Desktop.ini
+ehthumbs.db

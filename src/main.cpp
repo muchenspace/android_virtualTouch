@@ -43,7 +43,6 @@ void monitorTest(int slot,Vector2 data,int type)
 int main()
 {
     touch touchTest;
-    touchTest.monitorEvent(monitorTest);
     while (true)
     {
         touchTest.touchDown(110, {100, 200});

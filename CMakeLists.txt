@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.21)
 
 # NDK 路径：优先使用环境变量 ANDROID_NDK_HOME，否则使用默认路径
 if(NOT DEFINED ENV{ANDROID_NDK_HOME})
-    set(NDK_PATH D:/android-ndk-r27c) # 记得修改一下ndk路径
+    set(NDK_PATH C:/Android/Sdk/ndk/27.3.13750724) # 记得修改一下ndk路径
 else()
     set(NDK_PATH $ENV{ANDROID_NDK_HOME})
 endif()
