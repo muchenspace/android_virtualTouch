@@ -45,7 +45,6 @@ private:
     screen screenInfo{};//屏幕信息
     screen touchScreenInfo{};//触摸屏信息
     std::mutex fingersMutex{};
-    std::mutex uploadMutex{};
     std::atomic<bool> quitFlag{false};
     std::atomic<int> screenOrientation{0};
 private:
@@ -59,13 +58,11 @@ private:
     void InitTouchScreenInfo();//初始化物理触摸屏信息
     void InitScreenInfo();//初始化屏幕信息
     void openUinputOrThrow();//打开 /dev/uinput，失败时清理已启动线程/fd 并抛异常
-    void configureUinputCapabilities();//UI_SET_EVBIT/ABSBIT/KEYBIT/PROPBIT
+    void configureUinputCapabilities();//UI_SET_EVBIT/ABSBIT/PROPBIT
     void setupUinputDeviceParams();//填充 usetup 字段与 abs 参数
     void createUinputDevice();//write usetup + UI_DEV_CREATE
     void grabPhysicalTouchDevices();//EVIOCGRAB 独占物理触摸屏
     void calculateScreenToTouchRatio();//计算 screenToTouchRatio 并钳制
-    void sendInitialTouchDown();//写入 BTN_TOUCH=1（构造函数约束项，逻辑不变）
     Vector2 screenToTouchCoords(const Vector2& pos) const;//屏幕坐标→触摸坐标（用于 touchDown/touchMove）
-    Vector2 touchToScreenCoords(const Vector2& pos) const;//触摸坐标→屏幕坐标（用于监听回调）
     static void appendFingerEvents(input_event* events, int& count, const touchOBJ& finger);
 };

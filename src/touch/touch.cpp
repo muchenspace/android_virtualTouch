@@ -38,10 +38,6 @@ constexpr int kEventsPerFinger = 4;        // TRACKING_ID + X + Y + SYN_MT_REPOR
 constexpr int kEventsCapacity = 2 * kMaxSlots * kEventsPerFinger + 2; // +空帧回退 +SYN_REPORT = 82
 constexpr int kVendorId = 0x6c90;
 constexpr int kProductId = 0x8fb0;
-constexpr int kAbsXMax = 1599;
-constexpr int kAbsYMax = 2559;
-constexpr int kPressureMax = 1000;
-constexpr int kTouchMajorMax = 255;
 constexpr float kRatioSnapLower = 0.9f;    // 比例钳制下界
 constexpr float kRatioSnapUpper = 1.0f;    // 比例钳制上界
 } // namespace
@@ -137,7 +133,6 @@ touch::touch()
         std::string("屏幕分辨率: " + std::to_string(screenInfo.width) + "*" + std::to_string(screenInfo.height)).c_str());
 
     calculateScreenToTouchRatio();
-    sendInitialTouchDown();
 }
 
 void touch::openUinputOrThrow()
@@ -160,20 +155,11 @@ void touch::configureUinputCapabilities()
 {
     ioctl(uinputFd, (unsigned int) UI_SET_PROPBIT, INPUT_PROP_DIRECT); //设置为直接输入设备
     ioctl(uinputFd, (unsigned int) UI_SET_EVBIT, EV_ABS);
-    ioctl(uinputFd, (unsigned int) UI_SET_EVBIT, EV_KEY);
     ioctl(uinputFd, (unsigned int) UI_SET_EVBIT, EV_SYN); //支持的事件类型
 
-    ioctl(uinputFd, (unsigned int) UI_SET_ABSBIT, ABS_MT_TOUCH_MINOR);
-    ioctl(uinputFd, (unsigned int) UI_SET_ABSBIT, ABS_X);
-    ioctl(uinputFd, (unsigned int) UI_SET_ABSBIT, ABS_Y);
-    ioctl(uinputFd, (unsigned int) UI_SET_ABSBIT, ABS_MT_TOUCH_MAJOR);
-    ioctl(uinputFd, (unsigned int) UI_SET_ABSBIT, ABS_MT_WIDTH_MAJOR);
     ioctl(uinputFd, (unsigned int) UI_SET_ABSBIT, ABS_MT_POSITION_X);
     ioctl(uinputFd, (unsigned int) UI_SET_ABSBIT, ABS_MT_POSITION_Y);
     ioctl(uinputFd, (unsigned int) UI_SET_ABSBIT, ABS_MT_TRACKING_ID); //支持的事件
-
-    ioctl(uinputFd, (unsigned int) UI_SET_KEYBIT, BTN_TOUCH);
-    ioctl(uinputFd, (unsigned int) UI_SET_KEYBIT, BTN_TOOL_FINGER); //支持的事件
 }
 
 void touch::setupUinputDeviceParams()
@@ -183,10 +169,6 @@ void touch::setupUinputDeviceParams()
     usetup.id.product = kProductId;
     strcpy(usetup.name, "Virtual Touch Screen for muchen"); //驱动信息
 
-    usetup.absmin[ABS_X] = 0;
-    usetup.absmax[ABS_X] = kAbsXMax;
-    usetup.absmin[ABS_Y] = 0;
-    usetup.absmax[ABS_Y] = kAbsYMax;
     usetup.absmin[ABS_MT_POSITION_X] = 0;
     usetup.absmax[ABS_MT_POSITION_X] = touchScreenInfo.width;
     usetup.absfuzz[ABS_MT_POSITION_X] = 0;
@@ -195,11 +177,6 @@ void touch::setupUinputDeviceParams()
     usetup.absmax[ABS_MT_POSITION_Y] = touchScreenInfo.height;
     usetup.absfuzz[ABS_MT_POSITION_Y] = 0;
     usetup.absflat[ABS_MT_POSITION_Y] = 0;
-    usetup.absmin[ABS_MT_PRESSURE] = 0;
-    usetup.absmax[ABS_MT_PRESSURE] = kPressureMax; //触摸压力的最大最小值
-    usetup.absfuzz[ABS_MT_PRESSURE] = 0;
-    usetup.absflat[ABS_MT_PRESSURE] = 0;
-    usetup.absmax[ABS_MT_TOUCH_MAJOR] = kTouchMajorMax; //与屏接触面的最大值
     usetup.absmin[ABS_MT_TRACKING_ID] = 0;
     usetup.absmax[ABS_MT_TRACKING_ID] = kAbsTrackingIdMax; //按键码ID累计叠加最大值
 }
@@ -228,16 +205,6 @@ void touch::calculateScreenToTouchRatio()
     }
 }
 
-void touch::sendInitialTouchDown()
-{
-    input_event down{};
-    down.type = EV_KEY;
-    down.code = BTN_TOUCH;
-    down.value = 1;
-    write(uinputFd, &down, sizeof(down));
-    usleep(100000);
-}
-
 touch::~touch()
 {
     quitFlag.store(true);
@@ -246,8 +213,6 @@ touch::~touch()
     {
         close(fd);
     }
-    ioctl(uinputFd, UI_DEV_DESTROY);
-    close(uinputFd);
     if (getScreenOrientationThread.joinable())
         getScreenOrientationThread.join();
     for (std::thread &item: threads)
@@ -255,6 +220,8 @@ touch::~touch()
         if (item.joinable())
             item.join();
     }
+    ioctl(uinputFd, UI_DEV_DESTROY);
+    close(uinputFd);
 }
 
 
@@ -263,78 +230,78 @@ void touch::PTScreenEventToFinger(int fd)
     input_event ie{};
     int latestSlot{};
     bool frameChanged{false};
+    std::unique_lock<std::mutex> lock(fingersMutex, std::defer_lock);
+
     while (!quitFlag.load(std::memory_order_relaxed))
     {
         if (read(fd, &ie, sizeof(ie)) <= 0)
         {
             break;
         }
+        if (ie.type == EV_ABS)
         {
-            if (ie.type == EV_ABS)
+            if (!lock.owns_lock())
             {
-                if (ie.code == ABS_MT_SLOT)
-                {
-                    latestSlot = ie.value;
-                    // 越界 slot 标记为 -1，丢弃其后续事件，避免污染 slot 0
-                    if (latestSlot < 0 || latestSlot >= kMaxSlots)
-                    {
-                        latestSlot = -1;
-                        continue;
-                    }
-                    {
-                        std::lock_guard<std::mutex> lock(fingersMutex);
-                        // absmax[ABS_MT_TRACKING_ID]=65535，原值 114514 超限被内核钳位为 65535，导致所有手指 ID 碰撞。取模落入合法区间。
-                        fingers[0][latestSlot].TRACKING_ID = kPhysicalTrackingIdBase + latestSlot;
-                    }
-                    continue;
-                }
-                if (latestSlot < 0) continue; // 越界 slot 的事件全部丢弃
-                if (ie.code == ABS_MT_TRACKING_ID)
-                {
-                    if (ie.value == -1)
-                    {
-                        std::lock_guard<std::mutex> lock(fingersMutex);
-                        fingers[0][latestSlot].isDown = false;
-                        fingers[0][latestSlot].isUse = false;
-                        fingers[0][latestSlot].x = 0;
-                        fingers[0][latestSlot].y = 0;
-                    } else
-                    {
-                        std::lock_guard<std::mutex> lock(fingersMutex);
-                        fingers[0][latestSlot].isUse = true;
-                        fingers[0][latestSlot].isDown = true;
-                    }
-                    frameChanged = true;
-                    continue;
-                }
-                if (ie.code == ABS_MT_POSITION_X)
-                {
-                    std::lock_guard<std::mutex> lock(fingersMutex);
-                    fingers[0][latestSlot].x = ie.value;
-                    frameChanged = true;
-                    continue;
-                }
-                if (ie.code == ABS_MT_POSITION_Y)
-                {
-                    std::lock_guard<std::mutex> lock(fingersMutex);
-                    fingers[0][latestSlot].y = ie.value;
-                    frameChanged = true;
-                    continue;
-                }
+                lock.lock();
             }
-            if (ie.type == EV_SYN)
+
+            if (ie.code == ABS_MT_SLOT)
             {
-                if (ie.code == SYN_REPORT)
+                latestSlot = ie.value;
+                // 越界 slot 标记为 -1，丢弃其后续事件，避免污染 slot 0
+                if (latestSlot < 0 || latestSlot >= kMaxSlots)
                 {
-                    if (frameChanged)
-                    {
-                        upLoad();
-                        frameChanged = false;
-                    }
+                    latestSlot = -1;
                     continue;
                 }
+                fingers[0][latestSlot].TRACKING_ID = kPhysicalTrackingIdBase + latestSlot;
                 continue;
             }
+            if (latestSlot < 0) continue; // 越界 slot 的事件全部丢弃
+            if (ie.code == ABS_MT_TRACKING_ID)
+            {
+                if (ie.value == -1)
+                {
+                    fingers[0][latestSlot].isDown = false;
+                    fingers[0][latestSlot].isUse = false;
+                } else
+                {
+                    fingers[0][latestSlot].isUse = true;
+                    if (fingers[0][latestSlot].x > 0 && fingers[0][latestSlot].y > 0)
+                    {
+                        fingers[0][latestSlot].isDown = true;
+                    }
+                }
+                frameChanged = true;
+                continue;
+            }
+            if (ie.code == ABS_MT_POSITION_X)
+            {
+                fingers[0][latestSlot].x = ie.value;
+                if (fingers[0][latestSlot].isUse) fingers[0][latestSlot].isDown = true;
+                frameChanged = true;
+                continue;
+            }
+            if (ie.code == ABS_MT_POSITION_Y)
+            {
+                fingers[0][latestSlot].y = ie.value;
+                if (fingers[0][latestSlot].isUse) fingers[0][latestSlot].isDown = true;
+                frameChanged = true;
+                continue;
+            }
+        }
+        if (ie.type == EV_SYN && ie.code == SYN_REPORT)
+        {
+            if (lock.owns_lock())
+            {
+                lock.unlock();
+            }
+            if (frameChanged)
+            {
+                upLoad();
+                frameChanged = false;
+            }
+            continue;
         }
     }
 }
@@ -366,14 +333,12 @@ void touch::upLoad()
     }
     events[count++] = {.type = EV_SYN, .code = SYN_REPORT, .value = 0};
 
-    // 锁住整个写入阶段，防止多线程并发写 uinputFd 导致事件帧交叠
-    std::lock_guard<std::mutex> lock(uploadMutex);
     write(uinputFd, events, count * sizeof(input_event));
 }
 
 void touch::appendFingerEvents(input_event *events, int &count, const touchOBJ &finger)
 {
-    if (!finger.isDown) return;
+    if (!finger.isDown || (finger.x == 0 && finger.y == 0)) return;
     events[count++] = {.type = EV_ABS, .code = ABS_MT_TRACKING_ID, .value = finger.TRACKING_ID};
     events[count++] = {.type = EV_ABS, .code = ABS_MT_POSITION_X, .value = finger.x};
     events[count++] = {.type = EV_ABS, .code = ABS_MT_POSITION_Y, .value = finger.y};
@@ -456,7 +421,7 @@ int touch::GetIndexById(const int &byId)
 {
     for (int i{0}; i < kMaxSlots; i++)
     {
-        if (fingers[1][i].id == byId)
+        if (fingers[1][i].isUse && fingers[1][i].id == byId)
         {
             return i;
         }
@@ -495,13 +460,13 @@ void touch::touchDown(const int &id, const Vector2 &pos)
             {
                 return;
             }
-            fingers[1][index].isDown = true;
             fingers[1][index].id = id;
             // 用 index 而非 id 生成 tracking ID：id 可任意大且 (415411+id)%65536 会与物理区间(48978~48987)碰撞；改用 index 后区间固定 22305~22314，与物理不重叠。
             fingers[1][index].TRACKING_ID = kSimulatedTrackingIdBase + index;
             fingers[1][index].x = (int) newPos.x;
             fingers[1][index].y = (int) newPos.y;
             fingers[1][index].isUse = true;
+            fingers[1][index].isDown = true;
         }
     }
     this->upLoad();
