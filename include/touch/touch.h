@@ -52,7 +52,7 @@ private:
     int uinputFd{};//uinput的文件标识符
     std::thread getScreenOrientationThread{};//循环获取屏幕方向的线程
     float screenToTouchRatio{};//比例
-    touchOBJ fingers[kSimulatedSlotCount]{};//模拟触摸，仅占 slot 10-19
+    touchOBJ fingers[kSimulatedSlotCount]{};//模拟触摸
     screen screenInfo{};//屏幕信息
     screen touchScreenInfo{};//触摸屏信息
     std::mutex fingersMutex{};
@@ -74,6 +74,5 @@ private:
     void grabPhysicalTouchDevices();//EVIOCGRAB 独占物理触摸屏
     void calculateScreenToTouchRatio();//计算 screenToTouchRatio
     Vector2 screenToTouchCoords(const Vector2& pos) const;//屏幕坐标→触摸坐标（用于 touchDown/touchMove）
-    void writeFrame(const input_event* events, int count) const;//整帧一次写入，避免跨线程 slot 游标串扰
     static bool isForwardedAxis(int code);//判断物理事件是否需要透传
 };

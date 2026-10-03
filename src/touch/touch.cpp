@@ -32,7 +32,7 @@ touch::touch()
     InitScreenInfo();
     InitTouchScreenInfo();
 
-    openUinput();
+    uinputFd = open("/dev/uinput", O_RDWR | O_CLOEXEC);//打开uinput
     configureUinputCapabilities();
     setupUinputDeviceParams();
     createUinputDevice();
@@ -92,11 +92,11 @@ void touch::InitTouchScreenInfo()
     {
         if (entry.path().filename().string().rfind("event", 0) != 0) continue; // 仅处理 event* 文件
 
-        int fd = open(entry.path().c_str(), O_RDWR | O_CLOEXEC);
+        int fd = open(entry.path().c_str(), O_RDONLY | O_CLOEXEC);
         input_absinfo absinfo{};
         ioctl(fd, EVIOCGABS(ABS_MT_SLOT), &absinfo);
 
-        // 有 ABS_MT_SLOT 且槽数落在物理分区内，才视为触摸屏（非触摸节点 ioctl 失败，maximum 保持 0）
+        // SLOT不为0视为触摸屏
         if (absinfo.maximum > 0 && absinfo.maximum < kMaxPhysicalSlots)
         {
             touchScreenInfo.fd.emplace_back(fd); //直接使用已打开的fd，避免重复open
@@ -109,19 +109,16 @@ void touch::InitTouchScreenInfo()
                 touchScreenInfo.width = absX.maximum;
                 touchScreenInfo.height = absY.maximum;
             }
-        } else
+        }
+        else
         {
             close(fd); // 非触摸屏节点，关闭
         }
-    } //遍历/dev/input/下所有eventX，如果ABS_MT_SLOT数量在物理分区内就视为触摸屏
+    } //遍历/dev/input/下所有eventX，如果ABS_MT_SLOT数量不为0即视为触摸屏
 }
 
 // ---------------- uinput 设备 ----------------
 
-void touch::openUinput()
-{
-    uinputFd = open("/dev/uinput", O_RDWR | O_CLOEXEC);
-}
 
 void touch::configureUinputCapabilities()
 {
@@ -134,7 +131,7 @@ void touch::configureUinputCapabilities()
     ioctl(uinputFd, (unsigned int) UI_SET_ABSBIT, ABS_MT_POSITION_X);
     ioctl(uinputFd, (unsigned int) UI_SET_ABSBIT, ABS_MT_POSITION_Y);
     ioctl(uinputFd, (unsigned int) UI_SET_ABSBIT, ABS_MT_TRACKING_ID); //支持的事件
-}
+}//能力声明
 
 void touch::setupUinputDeviceParams()
 {
@@ -155,13 +152,13 @@ void touch::setupUinputDeviceParams()
     usetup.absflat[ABS_MT_POSITION_Y] = 0;
     usetup.absmin[ABS_MT_TRACKING_ID] = 0;
     usetup.absmax[ABS_MT_TRACKING_ID] = kAbsTrackingIdMax;
-}
+}//参数
 
 void touch::createUinputDevice()
 {
     write(uinputFd, &usetup, sizeof(usetup)); //将信息写入即将创建的驱动
     ioctl(uinputFd, UI_DEV_CREATE); //创建驱动
-}
+}//创建驱动
 
 void touch::grabPhysicalTouchDevices()
 {
@@ -169,13 +166,13 @@ void touch::grabPhysicalTouchDevices()
     {
         ioctl(entry, (unsigned int) EVIOCGRAB, 0x1); // 独占输入,只有此进程才能接收到事件 -_-
     }
-}
+}//独占输入
 
 void touch::calculateScreenToTouchRatio()
 {
     screenToTouchRatio = (float) (screenInfo.width + screenInfo.height) /
                          (float) (touchScreenInfo.width + touchScreenInfo.height);
-}
+}//映射
 
 // ---------------- 物理触摸透传 ----------------
 
@@ -186,10 +183,6 @@ bool touch::isForwardedAxis(int code)
            code == ABS_MT_POSITION_X || code == ABS_MT_POSITION_Y;
 }
 
-void touch::writeFrame(const input_event *events, int count) const
-{
-    write(uinputFd, events, count * sizeof(input_event));
-}
 
 void touch::PTScreenEventPassthrough(int fd)
 {
@@ -197,11 +190,9 @@ void touch::PTScreenEventPassthrough(int fd)
     input_event frame[kFrameCapacity]{};
     int count = 1;         // frame[0] 预留给帧首的 ABS_MT_SLOT
 
-    // 以物理设备当前 slot 为起点，避免启动瞬间（已有手指按下）首帧落到错误槽位
     input_absinfo slotInfo{};
     ioctl(fd, EVIOCGABS(ABS_MT_SLOT), &slotInfo);
-    int currentSlot = slotInfo.value;    // 物理设备当前 slot
-    int frameStartSlot = slotInfo.value; // 本帧起始时物理设备的 slot
+    int currentSlot = slotInfo.value;    // 物理设备当前 slot，首次向内核获取，后续自行记录
 
     while (!quitFlag.load(std::memory_order_relaxed))
     {
@@ -225,17 +216,11 @@ void touch::PTScreenEventPassthrough(int fd)
 
         if (ie.type == EV_SYN && ie.code == SYN_REPORT)
         {
-            if (count > 1)
-            {
-                // 帧首显式声明 slot：内核的 mt->slot 是设备级状态，会被模拟线程改写，
-                // 物理帧若不声明就会落到模拟线程留下的槽位上
-                frame[0] = {.type = EV_ABS, .code = ABS_MT_SLOT, .value = frameStartSlot};
-                frame[count++] = ie;
-                writeFrame(frame, count);
-                count = 1;
-                frameStartSlot = currentSlot; // 下一帧的起始 slot
-            }
-            continue;
+
+            frame[0] = {.type = EV_ABS, .code = ABS_MT_SLOT, .value = currentSlot};
+            frame[count++] = ie;
+            write(uinputFd, frame, count * sizeof(input_event));
+            count = 1;
         }
     }
 }
@@ -267,7 +252,7 @@ void touch::touchDown(const int &id, const Vector2 &pos)
         {.type = EV_ABS, .code = ABS_MT_POSITION_Y, .value = fingers[index].y},
         {.type = EV_SYN, .code = SYN_REPORT, .value = 0}
     };
-    writeFrame(frame, 5);
+    write(uinputFd, frame, 5 * sizeof(input_event));
 }
 
 void touch::touchMove(const int &id, const Vector2 &pos)
@@ -285,7 +270,7 @@ void touch::touchMove(const int &id, const Vector2 &pos)
         {.type = EV_ABS, .code = ABS_MT_POSITION_Y, .value = fingers[index].y},
         {.type = EV_SYN, .code = SYN_REPORT, .value = 0}
     };
-    writeFrame(frame, 4);
+    write(uinputFd, frame, 4 * sizeof(input_event));
 }
 
 void touch::touchUp(const int &id)
@@ -301,7 +286,7 @@ void touch::touchUp(const int &id)
         {.type = EV_ABS, .code = ABS_MT_TRACKING_ID, .value = -1},
         {.type = EV_SYN, .code = SYN_REPORT, .value = 0}
     };
-    writeFrame(frame, 3);
+    write(uinputFd, frame, 3 * sizeof(input_event));
 }
 
 int touch::GetIndexById(const int &byId)
