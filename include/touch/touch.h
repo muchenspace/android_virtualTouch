@@ -24,8 +24,8 @@ struct screen
 {
     int width{};
     int height{};
-    int orientation{};
-    std::vector<int> fd{};
+    int fd{};
+    float ratio{};
 };
 
 struct touchOBJ
@@ -51,11 +51,9 @@ private:
     uinput_user_dev usetup{};//驱动信息
     int uinputFd{};//uinput的文件标识符
     std::thread getScreenOrientationThread{};//循环获取屏幕方向的线程
-    float screenToTouchRatio{};//比例
     touchOBJ fingers[kSimulatedSlotCount]{};//模拟触摸
     screen screenInfo{};//屏幕信息
-    screen touchScreenInfo{};//触摸屏信息
-    std::mutex fingersMutex{};
+    std::vector<screen> touchScreen{};//触摸屏信息
     std::atomic<bool> quitFlag{false};
     std::atomic<int> screenOrientation{0};
 private:
@@ -64,7 +62,7 @@ private:
     void GetScreenOrientation();//循环获取屏幕方向
     static std::string exec(const std::string& command);
     Vector2 rotatePointx(const Vector2& pos, const Vector2& wh, bool reverse) const;//根据方向来重构坐标,pos是坐标，wh是宽高 --reverse为真代表要反向计算
-    void PTScreenEventPassthrough(int fd=0);//物理触摸屏事件原样透传到虚拟设备
+    void PTScreenEventPassthrough(screen dev);//物理触摸屏事件按比例换算后报告到虚拟设备
     void InitTouchScreenInfo();//初始化物理触摸屏信息
     void InitScreenInfo();//初始化屏幕信息
     void openUinput();//打开 /dev/uinput
@@ -72,7 +70,6 @@ private:
     void setupUinputDeviceParams();//填充 usetup 字段与 abs 参数
     void createUinputDevice();//write usetup + UI_DEV_CREATE
     void grabPhysicalTouchDevices();//EVIOCGRAB 独占物理触摸屏
-    void calculateScreenToTouchRatio();//计算 screenToTouchRatio
     Vector2 screenToTouchCoords(const Vector2& pos) const;//屏幕坐标→触摸坐标（用于 touchDown/touchMove）
     static bool isForwardedAxis(int code);//判断物理事件是否需要透传
 };

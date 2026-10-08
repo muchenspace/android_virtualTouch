@@ -32,7 +32,6 @@
                          ！！BUG退散！！
  */
 #include <unistd.h>
-#include <cmath>
 #include <chrono>
 #include <thread>
 #include "touch/touch.h"
@@ -41,53 +40,43 @@ int main()
 {
     touch touchTest;
 
-    constexpr float kPi = 3.14159265358979323846f;
-    const int fingerIds[4] = {101, 102, 103, 104};
-    // 四指各自的圆心坐标
-    const Vector2 centers[4] = {
-        {300.0f, 600.0f},   // 顶部左 (持续)
-        {800.0f, 600.0f},   // 顶部右 (持续)
-        {300.0f, 1400.0f},  // 底部左 (画一圈抬起0.5s)
-        {800.0f, 1400.0f}   // 底部右 (画一圈抬起0.5s)
-    };
-    const float radius = 120.0f;
+    const int swipeId = 1;
+    const int tapId = 2;
 
-    touchTest.touchDown(fingerIds[0], {centers[0].x + radius, centers[0].y});
-    touchTest.touchDown(fingerIds[1], {centers[1].x + radius, centers[1].y});
+    const Vector2 swipeStart{500.0f, 1200.0f};
+    const Vector2 swipeEnd{500.0f, 1000.0f};
+    const Vector2 tapPos{500.0f, 700.0f};
 
-    uint64_t step = 0;
     while (true)
     {
-        // 1. 上方两指：每步都在以 100Hz 持续画圆，永不停顿
-        float topAngle = (step % 100) * (2.0f * kPi / 100.0f);
-        touchTest.touchMove(fingerIds[0], {centers[0].x + radius * std::cos(topAngle), centers[0].y + radius * std::sin(topAngle)});
-        touchTest.touchMove(fingerIds[1], {centers[1].x + radius * std::cos(topAngle), centers[1].y + radius * std::sin(topAngle)});
+        auto periodStart = std::chrono::steady_clock::now();
 
-        // 2. 下方两指：150步为一个周期（画圈100步=1s，抬起50步=0.5s）
-        int cycleStep = step % 150;
-        if (cycleStep == 0)
+        while (std::chrono::duration_cast<std::chrono::seconds>(
+                   std::chrono::steady_clock::now() - periodStart).count() < 5)
         {
-            // 周期开始：下方两指落点
-            touchTest.touchDown(fingerIds[2], {centers[2].x + radius, centers[2].y});
-            touchTest.touchDown(fingerIds[3], {centers[3].x + radius, centers[3].y});
-        }
-        else if (cycleStep < 100)
-        {
-            // 画圆中（持续 1 秒）
-            float bottomAngle = cycleStep * (2.0f * kPi / 100.0f);
-            touchTest.touchMove(fingerIds[2], {centers[2].x + radius * std::cos(bottomAngle), centers[2].y + radius * std::sin(bottomAngle)});
-            touchTest.touchMove(fingerIds[3], {centers[3].x + radius * std::cos(bottomAngle), centers[3].y + radius * std::sin(bottomAngle)});
-        }
-        else if (cycleStep == 100)
-        {
-            // 刚好满一圈：下方两指抬起
-            touchTest.touchUp(fingerIds[2]);
-            touchTest.touchUp(fingerIds[3]);
-        }
-        // cycleStep 处于 101~149 期间：下方保持抬起（空跑 50 步 * 10ms = 0.5 秒）
+            touchTest.touchDown(swipeId, swipeStart);
+            for (int step = 1; step <= 20; ++step)
+            {
+                float t = static_cast<float>(step) / 20.0f;
+                Vector2 curPos{
+                    swipeStart.x + (swipeEnd.x - swipeStart.x) * t,
+                    swipeStart.y + (swipeEnd.y - swipeStart.y) * t
+                };
+                touchTest.touchMove(swipeId, curPos);
+                std::this_thread::sleep_for(std::chrono::milliseconds(10));
+            }
+            touchTest.touchUp(swipeId);
 
-        ++step;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10)); // 100Hz
+            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+
+            touchTest.touchDown(tapId, tapPos);
+            std::this_thread::sleep_for(std::chrono::milliseconds(80));
+            touchTest.touchUp(tapId);
+
+            std::this_thread::sleep_for(std::chrono::milliseconds(120));
+        }
+
+        std::this_thread::sleep_for(std::chrono::seconds(2));
     }
 
     return 0;

@@ -5,6 +5,7 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 #include <filesystem>
@@ -27,25 +28,23 @@ touch::touch()
     InitScreenInfo();
     InitTouchScreenInfo();
 
-    uinputFd = static_cast<int>(syscall(__NR_openat, AT_FDCWD, "/dev/uinput", O_RDWR | O_CLOEXEC));//打开uinput
+    uinputFd = static_cast<int>(syscall(__NR_openat, AT_FDCWD, "/dev/uinput", O_RDWR));//打开uinput
     if (uinputFd < 0)
     {
-        printf("[ERROR] 打开 /dev/uinput 失败 (errno: %d, %s)，请检查是否具有 Root 权限\n", errno, strerror(errno));
+        printf("[ERROR] 打开 /dev/uinput 失败\n");
         return;
     }
-    printf("[INFO] 成功打开 /dev/uinput (fd: %d)\n", uinputFd);
-
+    printf("[INFO] 成功打开 /dev/uinput");
     configureUinputCapabilities();
     setupUinputDeviceParams();
     createUinputDevice();
     grabPhysicalTouchDevices();
-    calculateScreenToTouchRatio();
 
     // 设备就绪后再启动线程，避免透传线程写入尚未打开的 fd
-    for (const auto &entry: touchScreenInfo.fd)
+    for (const auto &dev: touchScreen)
     {
-        threads.emplace_back(&touch::PTScreenEventPassthrough, this, entry);
-    } //每个疑似触摸屏的节点都调用PTScreenEventPassthrough，实际代码无法支持多触摸屏，建立在只有一个触摸屏的前提下
+        threads.emplace_back(&touch::PTScreenEventPassthrough, this, dev);
+    }
     getScreenOrientationThread = std::thread(&touch::GetScreenOrientation, this);
 
     // 等方向线程完成首轮 dumpsys，避免首帧坐标按竖屏方向旋转
@@ -57,13 +56,13 @@ touch::~touch()
 {
     quitFlag.store(true);
     // 关闭触摸屏 fd 使阻塞在 read() 的线程退出
-    for (auto &fd: touchScreenInfo.fd)
+    for (auto &dev: touchScreen)
     {
-        if (fd >= 0)
+        if (dev.fd >= 0)
         {
-            close(fd);
-            printf("[INFO] 释放物理触摸节点 (fd: %d)\n", fd);
-            fd = -1;
+            close(dev.fd);
+            printf("[INFO] 释放物理触摸节点 (fd: %d)\n", dev.fd);
+            dev.fd = -1;
         }
     }
     if (getScreenOrientationThread.joinable())
@@ -93,93 +92,58 @@ void touch::InitScreenInfo()
     {
         if (sscanf(line.c_str(), "Override size: %dx%d", &screenInfo.width, &screenInfo.height) == 2)
         {
-            printf("[INFO] 屏幕分辨率: %dx%d (使用自定义分辨率 Override)\n", screenInfo.width, screenInfo.height);
-            return; //有Override size则优先使用
+            break; //有Override size则优先使用
         }
-        if (sscanf(line.c_str(), "Physical size: %dx%d", &screenInfo.width, &screenInfo.height) == 2)
-        {
-            printf("[INFO] 屏幕分辨率: %dx%d (使用物理分辨率 Physical)\n", screenInfo.width, screenInfo.height);
-            return;
-        }
+        sscanf(line.c_str(), "Physical size: %dx%d", &screenInfo.width, &screenInfo.height);
     } //找不到Override size就使用Physical size
 
-    if (screenInfo.width <= 0 || screenInfo.height <= 0)
-    {
-        printf("[WARN] 无法通过 wm size 获取屏幕分辨率，当前宽高为: %dx%d\n", screenInfo.width, screenInfo.height);
-    }
+    printf("[INFO] 屏幕分辨率: %dx%d\n", screenInfo.width, screenInfo.height);
 } //初始化屏幕分辨率,方向单独放在一个线程了
 
 void touch::InitTouchScreenInfo()
 {
-    std::error_code ec;
-    auto iter = std::filesystem::directory_iterator("/dev/input/", ec);
-    if (ec)
+    for (const auto &entry: std::filesystem::directory_iterator("/dev/input/"))
     {
-        printf("[ERROR] 无法遍历 /dev/input/ 目录 (%s)，请确认权限\n", ec.message().c_str());
-        return;
-    }
-
-    for (const auto &entry: iter)
-    {
-        if (entry.path().filename().string().rfind("event", 0) != 0) continue; // 仅处理 event* 文件
-
-        int fd = static_cast<int>(syscall(__NR_openat, AT_FDCWD, entry.path().c_str(), O_RDONLY | O_CLOEXEC));
+        int fd = static_cast<int>(syscall(__NR_openat, AT_FDCWD, entry.path().c_str(), O_RDONLY));
         if (fd < 0)
         {
-            printf("[WARN] 无法打开输入节点: %s (%s)\n", entry.path().c_str(), strerror(errno));
+            printf("[WARN] 无法打开输入节点: %s\n", entry.path().c_str());
             continue;
         }
-
-        char deviceName[256]{"未知设备"};
-        syscall(__NR_ioctl, fd, EVIOCGNAME(sizeof(deviceName) - 1), deviceName);
-
         input_absinfo absinfo{};
         if (syscall(__NR_ioctl, fd, EVIOCGABS(ABS_MT_SLOT), &absinfo) < 0)
         {
             close(fd);
             continue;
         }
-
         // SLOT不为0视为触摸屏
-        if (absinfo.maximum > 0 && absinfo.maximum < kMaxPhysicalSlots)
+        if (absinfo.maximum > 0)
         {
-            printf("[INFO] 发现物理触摸屏节点: %s (设备名: \"%s\", 槽位上限: %d, fd: %d)\n",
-                   entry.path().c_str(), deviceName, absinfo.maximum, fd);
-            touchScreenInfo.fd.emplace_back(fd); //直接使用已打开的fd，避免重复open
-
-            if (touchScreenInfo.width == 0 || touchScreenInfo.height == 0) //有多个节点的情况下，只使用第一个节点的信息
+            printf("[INFO] 发现触摸屏节点: %s\n", entry.path().c_str());
+            input_absinfo absX{}, absY{};
+            if (syscall(__NR_ioctl, fd, EVIOCGABS(ABS_MT_POSITION_X), &absX) >= 0 && syscall(__NR_ioctl, fd, EVIOCGABS(ABS_MT_POSITION_Y), &absY) >= 0)
             {
-                input_absinfo absX{}, absY{};
-                if (syscall(__NR_ioctl, fd, EVIOCGABS(ABS_MT_POSITION_X), &absX) >= 0 &&
-                    syscall(__NR_ioctl, fd, EVIOCGABS(ABS_MT_POSITION_Y), &absY) >= 0)
-                {
-                    touchScreenInfo.width = absX.maximum;
-                    touchScreenInfo.height = absY.maximum;
-                    printf("[INFO] 触摸屏物理坐标范围: X=[0, %d], Y=[0, %d]\n",
-                           touchScreenInfo.width, touchScreenInfo.height);
-                }
-                else
-                {
-                    printf("[WARN] 获取节点 %s 坐标范围失败: %s\n", entry.path().c_str(), strerror(errno));
-                }
+                int screenSum = screenInfo.width + screenInfo.height;
+                int touchSum = absX.maximum + absY.maximum + 2;
+                float ratio = (touchSum > 0) ? (static_cast<float>(screenSum) / static_cast<float>(touchSum)) : 1.0f;
+                touchScreen.emplace_back(screen{absX.maximum, absY.maximum, fd, ratio});
+                printf("[INFO] 触摸屏坐标范围: X=[0, %d], Y=[0, %d], 映射比例: %.4f\n", absX.maximum, absY.maximum, ratio);
+            }
+            else
+            {
+                close(fd);
             }
         }
         else
         {
-            printf("[DEBUG] 节点 %s 不是触摸屏 (设备名: \"%s\", 槽位上限: %d)，已忽略\n",
-                   entry.path().c_str(), deviceName, absinfo.maximum);
-            close(fd); // 非触摸屏节点，关闭
+            close(fd);
         }
     } //遍历/dev/input/下所有eventX，如果ABS_MT_SLOT数量不为0即视为触摸屏
-
-    if (touchScreenInfo.fd.empty())
-    {
-        printf("[ERROR] 未在 /dev/input/ 中找到任何有效的物理触摸屏节点！(请检查 Root 权限)\n");
-    }
 }
 
-// ---------------- uinput 设备 ----------------
 
+
+// ---------------- uinput 设备 ----------------
 
 void touch::configureUinputCapabilities()
 {
@@ -204,11 +168,11 @@ void touch::setupUinputDeviceParams()
     usetup.absmin[ABS_MT_SLOT] = 0;
     usetup.absmax[ABS_MT_SLOT] = kTotalSlotCount - 1; // 声明 16 个 slot：0-9 物理，10-15 模拟
     usetup.absmin[ABS_MT_POSITION_X] = 0;
-    usetup.absmax[ABS_MT_POSITION_X] = touchScreenInfo.width;
+    usetup.absmax[ABS_MT_POSITION_X] = screenInfo.width;
     usetup.absfuzz[ABS_MT_POSITION_X] = 0;
     usetup.absflat[ABS_MT_POSITION_X] = 0;
     usetup.absmin[ABS_MT_POSITION_Y] = 0;
-    usetup.absmax[ABS_MT_POSITION_Y] = touchScreenInfo.height;
+    usetup.absmax[ABS_MT_POSITION_Y] = screenInfo.height;
     usetup.absfuzz[ABS_MT_POSITION_Y] = 0;
     usetup.absflat[ABS_MT_POSITION_Y] = 0;
     usetup.absmin[ABS_MT_TRACKING_ID] = 0;
@@ -220,12 +184,12 @@ void touch::createUinputDevice()
     if (uinputFd < 0) return;
     if (write(uinputFd, &usetup, sizeof(usetup)) != sizeof(usetup))
     {
-        printf("[ERROR] 向 /dev/uinput 写入设备参数失败: %s\n", strerror(errno));
+        printf("[ERROR] 向 /dev/uinput 写入设备参数失败\n");
         return;
     }
     if (syscall(__NR_ioctl, uinputFd, UI_DEV_CREATE) < 0)
     {
-        printf("[ERROR] 创建 uinput 虚拟设备失败: %s\n", strerror(errno));
+        printf("[ERROR] 创建 uinput 虚拟设备失败\n");
         return;
     }
     printf("[INFO] 虚拟触摸屏创建成功 (\"%s\")\n", usetup.name);
@@ -233,32 +197,18 @@ void touch::createUinputDevice()
 
 void touch::grabPhysicalTouchDevices()
 {
-    for (const auto &entry: touchScreenInfo.fd)
+    for (const auto &dev: touchScreen)
     {
-        if (syscall(__NR_ioctl, entry, EVIOCGRAB, 0x1) < 0)
+        if (syscall(__NR_ioctl, dev.fd, EVIOCGRAB, 0x1) < 0)
         {
-            printf("[WARN] 独占物理触摸节点 (fd: %d) 失败: %s\n", entry, strerror(errno));
+            printf("[WARN] 独占物理触摸节点 (fd: %d) 失败\n", dev.fd);
         }
         else
         {
-            printf("[INFO] 成功独占物理触摸节点 (fd: %d)\n", entry);
+            printf("[INFO] 成功独占物理触摸节点 (fd: %d)\n", dev.fd);
         }
     }
 }//独占输入
-
-void touch::calculateScreenToTouchRatio()
-{
-    int screenSum = screenInfo.width + screenInfo.height;
-    int touchSum = touchScreenInfo.width + touchScreenInfo.height;
-    if (touchSum <= 0)
-    {
-        screenToTouchRatio = 1.0f;
-        printf("[WARN] 触摸屏分辨率异常，比例重置为 1.0\n");
-        return;
-    }
-    screenToTouchRatio = static_cast<float>(screenSum) / static_cast<float>(touchSum);
-    printf("[INFO] 屏幕与触摸屏映射比例: %.4f\n", screenToTouchRatio);
-}//映射
 
 // ---------------- 物理触摸透传 ----------------
 
@@ -270,19 +220,19 @@ bool touch::isForwardedAxis(int code)
 }
 
 
-void touch::PTScreenEventPassthrough(int fd)
+void touch::PTScreenEventPassthrough(screen dev)
 {
     input_event ie{};
     input_event frame[kFrameCapacity]{};
     int count = 1;         // frame[0] 预留给帧首的 ABS_MT_SLOT
 
     input_absinfo slotInfo{};
-    syscall(__NR_ioctl, fd, EVIOCGABS(ABS_MT_SLOT), &slotInfo);
+    syscall(__NR_ioctl, dev.fd, EVIOCGABS(ABS_MT_SLOT), &slotInfo);
     int currentSlot = slotInfo.value;    // 物理设备当前 slot，首次向内核获取，后续自行记录
 
     while (!quitFlag.load(std::memory_order_relaxed))
     {
-        if (read(fd, &ie, sizeof(ie)) <= 0)
+        if (read(dev.fd, &ie, sizeof(ie)) <= 0)
         {
             break;
         }
@@ -295,6 +245,10 @@ void touch::PTScreenEventPassthrough(int fd)
             }
             if (isForwardedAxis(ie.code))
             {
+                if (ie.code == ABS_MT_POSITION_X || ie.code == ABS_MT_POSITION_Y)
+                {
+                    ie.value = static_cast<int>(std::round(static_cast<float>(ie.value) * dev.ratio));
+                }
                 frame[count++] = ie;
             }
             continue;
@@ -302,7 +256,6 @@ void touch::PTScreenEventPassthrough(int fd)
 
         if (ie.type == EV_SYN && ie.code == SYN_REPORT)
         {
-
             frame[0] = {.type = EV_ABS, .code = ABS_MT_SLOT, .value = currentSlot};
             frame[count++] = ie;
             write(uinputFd, frame, count * sizeof(input_event));
@@ -352,7 +305,10 @@ void touch::touchMove(const int &id, const Vector2 &pos)
     if (uinputFd < 0) return;
 
     int index = GetIndexById(id);
-    if (index == -1) return;
+    if (index == -1) 
+    {
+        return;
+    }
 
     Vector2 newPos = screenToTouchCoords(pos);
     fingers[index].x = (int) newPos.x;
@@ -469,6 +425,5 @@ Vector2 touch::rotatePointx(const Vector2 &pos, const Vector2 &wh, bool reverse)
 Vector2 touch::screenToTouchCoords(const Vector2 &pos) const
 {
     Vector2 result = rotatePointx(pos, {screenInfo.width, screenInfo.height}, true);
-    result /= screenToTouchRatio;
     return result;
 }
