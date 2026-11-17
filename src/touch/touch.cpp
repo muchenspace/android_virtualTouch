@@ -3,8 +3,10 @@
 #include <linux/input.h>
 #include <linux/uinput.h>
 #include <fcntl.h>
+#include <poll.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <cerrno>
 #include <cmath>
 #include <cstdio>
 #include <cstring>
@@ -16,8 +18,8 @@
 #include <string>
 
 namespace {
-constexpr int kSimulatedTrackingIdBase = 415411 % 65536;  // 模拟触点 tracking ID 基址 → [22195, 22200]
-constexpr int kAbsTrackingIdMax = 65535;   // absmax[ABS_MT_TRACKING_ID]
+constexpr int kSimulatedTrackingIdBase = 65536;  // 模拟触点 tracking ID 基址 → [65536, 65541]
+constexpr int kAbsTrackingIdMax = kSimulatedTrackingIdBase + kSimulatedSlotCount - 1; // absmax[ABS_MT_TRACKING_ID]
 constexpr int kFrameCapacity = 64;         // 单帧事件上限：10 物理槽 × 4 轴 + SYN
 constexpr int kVendorId = 0x6c90;
 constexpr int kProductId = 0x8fb0;
@@ -26,18 +28,37 @@ constexpr int kProductId = 0x8fb0;
 touch::touch()
 {
     InitScreenInfo();
+    if (screenInfo.width <= 0 || screenInfo.height <= 0)
+    {
+        printf("[ERROR] 获取屏幕分辨率失败 (%dx%d)，中止初始化\n", screenInfo.width, screenInfo.height);
+        return;
+    }
+
     InitTouchScreenInfo();
 
-    uinputFd = static_cast<int>(syscall(__NR_openat, AT_FDCWD, "/dev/uinput", O_RDWR));//打开uinput
+    uinputFd = static_cast<int>(syscall(__NR_openat, AT_FDCWD, "/dev/uinput", O_RDWR | O_CLOEXEC));//打开uinput
     if (uinputFd < 0)
     {
         printf("[ERROR] 打开 /dev/uinput 失败\n");
+        for (auto &dev: touchScreen)
+        {
+            if (dev.fd >= 0) close(dev.fd);
+        }
+        touchScreen.clear();
         return;
     }
-    printf("[INFO] 成功打开 /dev/uinput");
+    printf("[INFO] 成功打开 /dev/uinput\n");
     configureUinputCapabilities();
     setupUinputDeviceParams();
-    createUinputDevice();
+    if (!createUinputDevice())
+    {
+        for (auto &dev: touchScreen)
+        {
+            if (dev.fd >= 0) close(dev.fd);
+        }
+        touchScreen.clear();
+        return;
+    }
     grabPhysicalTouchDevices();
 
     // 设备就绪后再启动线程，避免透传线程写入尚未打开的 fd
@@ -55,7 +76,13 @@ touch::touch()
 touch::~touch()
 {
     quitFlag.store(true);
-    // 关闭触摸屏 fd 使阻塞在 read() 的线程退出
+    if (getScreenOrientationThread.joinable())
+        getScreenOrientationThread.join();
+    for (std::thread &item: threads)
+    {
+        if (item.joinable())
+            item.join();
+    }
     for (auto &dev: touchScreen)
     {
         if (dev.fd >= 0)
@@ -64,13 +91,6 @@ touch::~touch()
             printf("[INFO] 释放物理触摸节点 (fd: %d)\n", dev.fd);
             dev.fd = -1;
         }
-    }
-    if (getScreenOrientationThread.joinable())
-        getScreenOrientationThread.join();
-    for (std::thread &item: threads)
-    {
-        if (item.joinable())
-            item.join();
     }
     if (uinputFd >= 0)
     {
@@ -104,7 +124,7 @@ void touch::InitTouchScreenInfo()
 {
     for (const auto &entry: std::filesystem::directory_iterator("/dev/input/"))
     {
-        int fd = static_cast<int>(syscall(__NR_openat, AT_FDCWD, entry.path().c_str(), O_RDONLY));
+        int fd = static_cast<int>(syscall(__NR_openat, AT_FDCWD, entry.path().c_str(), O_RDONLY | O_CLOEXEC));
         if (fd < 0)
         {
             printf("[WARN] 无法打开输入节点: %s\n", entry.path().c_str());
@@ -123,11 +143,10 @@ void touch::InitTouchScreenInfo()
             input_absinfo absX{}, absY{};
             if (syscall(__NR_ioctl, fd, EVIOCGABS(ABS_MT_POSITION_X), &absX) >= 0 && syscall(__NR_ioctl, fd, EVIOCGABS(ABS_MT_POSITION_Y), &absY) >= 0)
             {
-                int screenSum = screenInfo.width + screenInfo.height;
-                int touchSum = absX.maximum + absY.maximum + 2;
-                float ratio = (touchSum > 0) ? (static_cast<float>(screenSum) / static_cast<float>(touchSum)) : 1.0f;
-                touchScreen.emplace_back(screen{absX.maximum, absY.maximum, fd, ratio});
-                printf("[INFO] 触摸屏坐标范围: X=[0, %d], Y=[0, %d], 映射比例: %.4f\n", absX.maximum, absY.maximum, ratio);
+                float ratioX = (absX.maximum > 0) ? (static_cast<float>(screenInfo.width - 1) / static_cast<float>(absX.maximum)) : 1.0f;
+                float ratioY = (absY.maximum > 0) ? (static_cast<float>(screenInfo.height - 1) / static_cast<float>(absY.maximum)) : 1.0f;
+                touchScreen.emplace_back(screen{absX.maximum, absY.maximum, fd, ratioX, ratioY});
+                printf("[INFO] 触摸屏坐标范围: X=[0, %d], Y=[0, %d], 映射比例: X=%.4f, Y=%.4f\n", absX.maximum, absY.maximum, ratioX, ratioY);
             }
             else
             {
@@ -168,31 +187,36 @@ void touch::setupUinputDeviceParams()
     usetup.absmin[ABS_MT_SLOT] = 0;
     usetup.absmax[ABS_MT_SLOT] = kTotalSlotCount - 1; // 声明 16 个 slot：0-9 物理，10-15 模拟
     usetup.absmin[ABS_MT_POSITION_X] = 0;
-    usetup.absmax[ABS_MT_POSITION_X] = screenInfo.width;
+    usetup.absmax[ABS_MT_POSITION_X] = screenInfo.width - 1;
     usetup.absfuzz[ABS_MT_POSITION_X] = 0;
     usetup.absflat[ABS_MT_POSITION_X] = 0;
     usetup.absmin[ABS_MT_POSITION_Y] = 0;
-    usetup.absmax[ABS_MT_POSITION_Y] = screenInfo.height;
+    usetup.absmax[ABS_MT_POSITION_Y] = screenInfo.height - 1;
     usetup.absfuzz[ABS_MT_POSITION_Y] = 0;
     usetup.absflat[ABS_MT_POSITION_Y] = 0;
     usetup.absmin[ABS_MT_TRACKING_ID] = 0;
     usetup.absmax[ABS_MT_TRACKING_ID] = kAbsTrackingIdMax;
 }//参数
 
-void touch::createUinputDevice()
+bool touch::createUinputDevice()
 {
-    if (uinputFd < 0) return;
+    if (uinputFd < 0) return false;
     if (write(uinputFd, &usetup, sizeof(usetup)) != sizeof(usetup))
     {
         printf("[ERROR] 向 /dev/uinput 写入设备参数失败\n");
-        return;
+        close(uinputFd);
+        uinputFd = -1;
+        return false;
     }
     if (syscall(__NR_ioctl, uinputFd, UI_DEV_CREATE) < 0)
     {
         printf("[ERROR] 创建 uinput 虚拟设备失败\n");
-        return;
+        close(uinputFd);
+        uinputFd = -1;
+        return false;
     }
     printf("[INFO] 虚拟触摸屏创建成功 (\"%s\")\n", usetup.name);
+    return true;
 }//创建驱动
 
 void touch::grabPhysicalTouchDevices()
@@ -229,9 +253,26 @@ void touch::PTScreenEventPassthrough(screen dev)
     input_absinfo slotInfo{};
     syscall(__NR_ioctl, dev.fd, EVIOCGABS(ABS_MT_SLOT), &slotInfo);
     int currentSlot = slotInfo.value;    // 物理设备当前 slot，首次向内核获取，后续自行记录
+    frame[0] = {.type = EV_ABS, .code = ABS_MT_SLOT, .value = currentSlot};
+
+    pollfd pfd{.fd = dev.fd, .events = POLLIN, .revents = 0};
 
     while (!quitFlag.load(std::memory_order_relaxed))
     {
+        int pollRet = poll(&pfd, 1, 100);
+        if (pollRet == 0)
+        {
+            continue;
+        }
+        if (pollRet < 0)
+        {
+            if (errno == EINTR) continue;
+            break;
+        }
+        if (pfd.revents & (POLLERR | POLLHUP | POLLNVAL))
+        {
+            break;
+        }
         if (read(dev.fd, &ie, sizeof(ie)) <= 0)
         {
             break;
@@ -245,9 +286,13 @@ void touch::PTScreenEventPassthrough(screen dev)
             }
             if (isForwardedAxis(ie.code))
             {
-                if (ie.code == ABS_MT_POSITION_X || ie.code == ABS_MT_POSITION_Y)
+                if (ie.code == ABS_MT_POSITION_X)
                 {
-                    ie.value = static_cast<int>(std::round(static_cast<float>(ie.value) * dev.ratio));
+                    ie.value = static_cast<int>(std::round(static_cast<float>(ie.value) * dev.ratioX));
+                }
+                else if (ie.code == ABS_MT_POSITION_Y)
+                {
+                    ie.value = static_cast<int>(std::round(static_cast<float>(ie.value) * dev.ratioY));
                 }
                 frame[count++] = ie;
             }
@@ -256,10 +301,10 @@ void touch::PTScreenEventPassthrough(screen dev)
 
         if (ie.type == EV_SYN && ie.code == SYN_REPORT)
         {
-            frame[0] = {.type = EV_ABS, .code = ABS_MT_SLOT, .value = currentSlot};
             frame[count++] = ie;
             write(uinputFd, frame, count * sizeof(input_event));
             count = 1;
+            frame[0] = {.type = EV_ABS, .code = ABS_MT_SLOT, .value = currentSlot};
         }
     }
 }
@@ -424,6 +469,6 @@ Vector2 touch::rotatePointx(const Vector2 &pos, const Vector2 &wh, bool reverse)
 
 Vector2 touch::screenToTouchCoords(const Vector2 &pos) const
 {
-    Vector2 result = rotatePointx(pos, {screenInfo.width, screenInfo.height}, true);
+    Vector2 result = rotatePointx(pos, {screenInfo.width - 1, screenInfo.height - 1}, true);
     return result;
 }

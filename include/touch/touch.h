@@ -3,7 +3,6 @@
 #include <linux/uinput.h>
 #include <thread>
 #include <atomic>
-#include <mutex>
 #include <string>
 #include <vector>
 
@@ -25,7 +24,8 @@ struct screen
     int width{};
     int height{};
     int fd{};
-    float ratio{};
+    float ratioX{};
+    float ratioY{};
 };
 
 struct touchOBJ
@@ -49,7 +49,7 @@ public:
 private:
     std::vector<std::thread> threads;//储存物理触摸屏透传线程
     uinput_user_dev usetup{};//驱动信息
-    int uinputFd{};//uinput的文件标识符
+    int uinputFd{-1};//uinput的文件标识符
     std::thread getScreenOrientationThread{};//循环获取屏幕方向的线程
     touchOBJ fingers[kSimulatedSlotCount]{};//模拟触摸
     screen screenInfo{};//屏幕信息
@@ -65,10 +65,9 @@ private:
     void PTScreenEventPassthrough(screen dev);//物理触摸屏事件按比例换算后报告到虚拟设备
     void InitTouchScreenInfo();//初始化物理触摸屏信息
     void InitScreenInfo();//初始化屏幕信息
-    void openUinput();//打开 /dev/uinput
     void configureUinputCapabilities();//UI_SET_EVBIT/ABSBIT/PROPBIT
     void setupUinputDeviceParams();//填充 usetup 字段与 abs 参数
-    void createUinputDevice();//write usetup + UI_DEV_CREATE
+    bool createUinputDevice();//write usetup + UI_DEV_CREATE
     void grabPhysicalTouchDevices();//EVIOCGRAB 独占物理触摸屏
     Vector2 screenToTouchCoords(const Vector2& pos) const;//屏幕坐标→触摸坐标（用于 touchDown/touchMove）
     static bool isForwardedAxis(int code);//判断物理事件是否需要透传
